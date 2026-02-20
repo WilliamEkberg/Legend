@@ -1,0 +1,148 @@
+# SCIP Engine Runtime Base Image
+# Pre-bundles all language runtimes and build tools so the main Dockerfile
+# doesn't re-download them on every build (~10+ min → seconds).
+#
+# Build once:
+#   ./build-base.sh
+#
+# Rebuild only when you need to update a language runtime or add a new tool.
+
+FROM ubuntu:22.04
+
+ARG TARGETARCH
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ============================================
+# Core runtime dependencies
+# ============================================
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    ca-certificates \
+    # Python runtime (required for scip-python)
+    python3.11 \
+    python3-pip \
+    # Required for .NET on Linux
+    libicu70 \
+    # Java JDK (scip-java is a compiler plugin — needs javac, not just JRE)
+    openjdk-17-jdk-headless \
+    # Required for adding PPAs
+    software-properties-common \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# PHP 8.2 (scip-php requires ^8.2, Ubuntu 22.04 ships 8.1)
+# ============================================
+RUN add-apt-repository -y ppa:ondrej/php \
+    && apt-get update && apt-get install -y php8.2-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# Java build tools (scip-java compiler plugin runs during actual builds)
+# ============================================
+RUN apt-get update && apt-get install -y maven gradle \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# sbt for Scala projects
+# ============================================
+RUN echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | tee /etc/apt/sources.list.d/sbt.list \
+    && curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | apt-key add - \
+    && apt-get update && apt-get install -y sbt \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# Node.js 20 + pnpm
+# ============================================
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g pnpm \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================
+# .NET 8 SDK
+# ============================================
+RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh \
+    && chmod +x dotnet-install.sh \
+    && ./dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet \
+    && rm dotnet-install.sh
+
+ENV PATH="/usr/share/dotnet:/root/.dotnet/tools:${PATH}"
+ENV DOTNET_ROOT="/usr/share/dotnet"
+
+# Install scip-dotnet
+RUN /usr/share/dotnet/dotnet tool install -g scip-dotnet --version 0.2.12
+
+# ============================================
+# Go 1.24 (architecture-aware)
+# ============================================
+RUN case "${TARGETARCH}" in \
+        "amd64") GO_ARCH="amd64" ;; \
+        "arm64") GO_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac \
+    && curl -fsSL "https://go.dev/dl/go1.24.4.linux-${GO_ARCH}.tar.gz" | tar -C /usr/local -xzf -
+
+ENV PATH="/usr/local/go/bin:/root/go/bin:${PATH}"
+ENV GOPATH="/root/go"
+ENV GOTOOLCHAIN=auto
+
+# Install scip-go + scip CLI
+RUN go install github.com/sourcegraph/scip-go/cmd/scip-go@v0.1.26 \
+    && go install github.com/sourcegraph/scip/cmd/scip@v0.6.1
+
+# ============================================
+# SCIP indexers (Node-based)
+# ============================================
+RUN npm install -g @sourcegraph/scip-typescript@0.4.0 @sourcegraph/scip-python@0.6.6
+
+# Create wrapper scripts for scip-typescript and scip-python
+RUN printf '#!/bin/bash\nexec node /usr/lib/node_modules/@sourcegraph/scip-typescript/dist/src/main.js "$@"\n' > /usr/local/bin/scip-typescript \
+    && chmod +x /usr/local/bin/scip-typescript \
+    && printf '#!/bin/bash\nexec node /usr/lib/node_modules/@sourcegraph/scip-python/index.js "$@"\n' > /usr/local/bin/scip-python \
+    && chmod +x /usr/local/bin/scip-python
+
+# ============================================
+# Java indexer (scip-java via Coursier)
+# ============================================
+RUN case "${TARGETARCH}" in \
+        "amd64") CS_ARCH="x86_64" ;; \
+        "arm64") CS_ARCH="aarch64" ;; \
+        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac \
+    && curl -fL "https://github.com/coursier/launchers/raw/master/cs-${CS_ARCH}-pc-linux.gz" \
+       | gzip -d > /usr/local/bin/cs \
+    && chmod +x /usr/local/bin/cs \
+    && mkdir -p /root/.local/share/coursier/bin \
+    && cs bootstrap com.sourcegraph:scip-java_2.13:0.11.1 -M com.sourcegraph.scip_java.ScipJava -f -o /usr/local/bin/scip-java
+
+# ============================================
+# PHP indexer (scip-php)
+# ============================================
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
+    && git clone --branch v0.0.2 --depth 1 https://github.com/davidrjenni/scip-php.git /opt/scip-php \
+    && cd /opt/scip-php \
+    && composer install --no-dev --no-interaction \
+    && printf '#!/bin/bash\nexec php /opt/scip-php/bin/scip-php "$@"\n' > /usr/local/bin/scip-php \
+    && chmod +x /usr/local/bin/scip-php
+
+# ============================================
+# Verify everything is installed
+# ============================================
+RUN echo "=== Verifying base image installations ===" \
+    && echo "Node.js: $(node --version)" \
+    && echo "npm: $(npm --version)" \
+    && echo ".NET: $(dotnet --version)" \
+    && echo "Go: $(go version)" \
+    && echo "Python: $(python3 --version)" \
+    && echo "Java: $(java --version 2>&1 | head -1)" \
+    && echo "PHP: $(php8.2 --version | head -1)" \
+    && echo "scip CLI: $(scip --version 2>&1 | head -1 || echo 'installed')" \
+    && echo "=== Base image ready ==="
+
+# Node.js heap for large monorepos
+ENV SCIP_MEMORY_LIMIT=6144
+ENV NODE_OPTIONS="--max-old-space-size=6144"
+
+WORKDIR /workspace

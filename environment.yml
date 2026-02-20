@@ -1,0 +1,23 @@
+node: ">=20"
+
+rust: ">=1.77.2"
+
+docker: true  # Required for SCIP indexing
+
+python:
+  # Runtime
+  - fastapi>=0.110
+  - pydantic>=2.0
+  - uvicorn>=0.29
+  - protobuf>=5.0
+  - networkx>=3.0
+  - igraph>=0.11
+  - leidenalg>=0.10
+  - litellm
+
+  # Testing
+  - pytest
+  - httpx
+
+  # Dev tools
+  - pre-commit

@@ -1,0 +1,191 @@
+name: Docker Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/scip-engine/legend-indexer/**'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/scip-engine/legend-indexer/**'
+      - '.github/workflows/docker.yml'
+  # Allow manual trigger for rebuilding images
+  workflow_dispatch:
+    inputs:
+      rebuild_base:
+        description: 'Force rebuild base image (slow, ~15 min)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  BASE_IMAGE_NAME: legend-indexer-base
+  FINAL_IMAGE_NAME: scip-engine
+
+jobs:
+  # Determine what needs to be built
+  check-changes:
+    name: Check Changes
+    runs-on: ubuntu-latest
+    outputs:
+      base_changed: ${{ steps.changes.outputs.base }}
+      final_changed: ${{ steps.changes.outputs.final }}
+      owner_lowercase: ${{ steps.owner.outputs.lowercase }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Convert repository owner to lowercase (Docker requires lowercase)
+      - name: Get lowercase owner name
+        id: owner
+        run: echo "lowercase=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            base:
+              - 'backend/scip-engine/legend-indexer/Dockerfile.base'
+            final:
+              - 'backend/scip-engine/legend-indexer/**'
+
+  # Build base image only when Dockerfile.base changes or manually triggered
+  build-base:
+    name: Build Base Image
+    runs-on: ubuntu-latest
+    needs: check-changes
+    permissions:
+      contents: read
+      packages: write
+    # Run if: Dockerfile.base changed OR manual rebuild requested
+    if: |
+      needs.check-changes.outputs.base_changed == 'true' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.rebuild_base == 'true')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for multi-arch builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ needs.check-changes.outputs.owner_lowercase }}/${{ env.BASE_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+            type=ref,event=branch
+
+      - name: Build and push base image
+        uses: docker/build-push-action@v5
+        with:
+          context: backend/scip-engine/legend-indexer
+          file: backend/scip-engine/legend-indexer/Dockerfile.base
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Build final scip-engine image
+  build-final:
+    name: Build SCIP Engine Image
+    runs-on: ubuntu-latest
+    needs: [check-changes, build-base]
+    permissions:
+      contents: read
+      packages: write
+    # Run if any SCIP files changed AND not a PR (don't push from PRs)
+    # Use always() to run even when build-base is skipped
+    if: |
+      always() &&
+      needs.check-changes.outputs.final_changed == 'true' &&
+      github.event_name != 'pull_request' &&
+      (needs.build-base.result == 'success' || needs.build-base.result == 'skipped')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ needs.check-changes.outputs.owner_lowercase }}/${{ env.FINAL_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+            type=ref,event=branch
+
+      # Modify Dockerfile to use registry base image instead of local
+      - name: Update Dockerfile to use registry base
+        run: |
+          sed -i 's|FROM legend-indexer-base:latest|FROM ${{ env.REGISTRY }}/${{ needs.check-changes.outputs.owner_lowercase }}/${{ env.BASE_IMAGE_NAME }}:latest|g' \
+            backend/scip-engine/legend-indexer/Dockerfile
+
+      - name: Build and push final image
+        uses: docker/build-push-action@v5
+        with:
+          context: backend/scip-engine/legend-indexer
+          file: backend/scip-engine/legend-indexer/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Validate PR builds work (without pushing)
+  validate-pr:
+    name: Validate Docker Build (PR)
+    runs-on: ubuntu-latest
+    needs: check-changes
+    if: |
+      github.event_name == 'pull_request' &&
+      needs.check-changes.outputs.final_changed == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # For PRs, we can't build the final image without the base in registry
+      # So we just validate the Dockerfile syntax and Rust compilation
+      - name: Validate Rust build stage
+        run: |
+          docker build \
+            --target rust-build \
+            -f backend/scip-engine/legend-indexer/Dockerfile \
+            backend/scip-engine/legend-indexer

@@ -1,0 +1,32 @@
+# Build artifacts
+target/
+*.rlib
+*.rmeta
+*.d
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+tests/fixtures/*/index.scip
+tests/fixtures/*/output/
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in build)
+*.md
+!README.md
+
+# Local config
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db

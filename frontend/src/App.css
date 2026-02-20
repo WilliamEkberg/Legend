@@ -1,0 +1,475 @@
+/* ── Terminal Window (full viewport) ── */
+.terminal {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* ── Title bar ── */
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.terminal-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.terminal-dots span {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.terminal-dots span:nth-child(1) { background: #ff5f57; }
+.terminal-dots span:nth-child(2) { background: #ffbd2e; }
+.terminal-dots span:nth-child(3) { background: #28c840; }
+
+.terminal-title {
+  flex: 1;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+/* ── Terminal body ── */
+.terminal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* ── ASCII Logo ── */
+.logo {
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.logo pre {
+  display: inline-block;
+  color: var(--cyan);
+  font-size: 0.6rem;
+  line-height: 1.2;
+  margin: 0;
+  text-shadow: var(--glow-cyan);
+}
+
+.version {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  margin-bottom: 24px;
+  letter-spacing: 0.15em;
+}
+
+/* ── Steps box ── */
+.steps-box {
+  margin-bottom: 24px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.steps-intro {
+  margin: 0 0 12px;
+  font-size: 0.75rem;
+  color: #ffffff;
+  line-height: 1.5;
+}
+
+.steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--cyan);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.steps-warning {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 0.7rem;
+  color: var(--amber);
+  text-align: center;
+  line-height: 1.4;
+}
+
+/* ── Form fields ── */
+.field {
+  margin-bottom: 16px;
+}
+
+.field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.field-label .prompt {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.field-label .hint {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  color: var(--green);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.field input::placeholder {
+  color: var(--text-dim);
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.5;
+}
+
+.field textarea::placeholder {
+  color: var(--text-dim);
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: var(--cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.field select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* ── Run row ── */
+.run-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* ── Run button ── */
+.run-btn {
+  flex: 1;
+  margin-top: 0;
+  padding: 12px;
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bg);
+  background: var(--cyan);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.run-btn:hover:not(:disabled) {
+  background: var(--green);
+  box-shadow: var(--glow-green);
+}
+
+.run-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Loading spinner ── */
+.run-btn.loading {
+  position: relative;
+  color: transparent;
+}
+
+.run-btn.loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 18px;
+  height: 18px;
+  border: 2px solid transparent;
+  border-top-color: var(--bg);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Cancel button ── */
+.cancel-btn {
+  padding: 12px 20px;
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--red);
+  background: rgba(255, 61, 90, 0.1);
+  border: 1px solid rgba(255, 61, 90, 0.3);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.cancel-btn:hover {
+  background: rgba(255, 61, 90, 0.2);
+  border-color: var(--red);
+}
+
+/* ── Pipeline progress indicator ── */
+.pipeline-progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 16px;
+  padding: 10px 0;
+}
+
+.pipeline-segment {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  border-radius: 3px;
+}
+
+.pipeline-segment + .pipeline-segment::before {
+  content: '—';
+  color: var(--border);
+  margin-right: 4px;
+  font-weight: 400;
+}
+
+.pipeline-segment .pipeline-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pipeline-segment.pending .pipeline-dot {
+  background: var(--text-dim);
+  opacity: 0.5;
+}
+
+.pipeline-segment.pending .pipeline-label {
+  color: var(--text-dim);
+}
+
+.pipeline-segment.active .pipeline-dot {
+  background: var(--cyan);
+  box-shadow: var(--glow-cyan);
+  animation: blink 1s step-end infinite;
+}
+
+.pipeline-segment.active .pipeline-label {
+  color: var(--cyan);
+}
+
+.pipeline-segment.completed .pipeline-dot {
+  background: var(--green);
+  box-shadow: var(--glow-green);
+}
+
+.pipeline-segment.completed .pipeline-label {
+  color: var(--green);
+}
+
+/* ── Output block ── */
+.output-block {
+  margin-top: 20px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.output-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.output-header .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.output-block.success .output-header { color: var(--green); }
+.output-block.success .status-dot {
+  background: var(--green);
+  box-shadow: var(--glow-green);
+}
+
+.output-block.error .output-header { color: var(--red); }
+.output-block.error .status-dot {
+  background: var(--red);
+  box-shadow: 0 0 10px rgba(255, 61, 90, 0.3);
+}
+
+.output-content {
+  padding: 12px;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.output-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+
+.output-block.success .output-content pre {
+  color: var(--green);
+}
+
+.output-block.error .output-content pre {
+  color: var(--red);
+}
+
+/* Running state */
+.output-block.running .output-header { color: var(--cyan); }
+.output-block.running .status-dot {
+  background: var(--cyan);
+  box-shadow: var(--glow-cyan);
+  animation: blink 1s step-end infinite;
+}
+
+/* Per-line coloring for streaming output */
+.output-content .line-out {
+  color: var(--green);
+}
+
+.output-content .line-error {
+  color: var(--red);
+}
+
+/* ── Inline error (no output block) ── */
+.inline-error {
+  margin-top: 16px;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: var(--red);
+  background: rgba(255, 61, 90, 0.08);
+  border: 1px solid rgba(255, 61, 90, 0.2);
+  border-radius: 4px;
+}
+
+/* ── Separator ── */
+.separator {
+  margin: 20px 0;
+  border: none;
+  border-top: 1px dashed var(--border);
+}
+
+/* ── Cursor blink ── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.cursor {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: var(--cyan);
+  margin-left: 4px;
+  vertical-align: middle;
+  animation: blink 1s step-end infinite;
+}
+
+/* ── Scrollbar ── */
+.output-content::-webkit-scrollbar {
+  width: 6px;
+}
+.output-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+.output-content::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+/* ── Nav link ── */
+.nav-link {
+  display: inline-block;
+  color: var(--cyan);
+  text-decoration: none;
+  font-size: 0.8rem;
+}
+
+.nav-link:hover {
+  color: var(--green);
+}

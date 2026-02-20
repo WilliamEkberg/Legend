@@ -1,0 +1,38 @@
+# Environment & secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Node
+node_modules/
+
+# Build output
+dist/
+target/
+output/
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.sw?
+
+# Logs
+*.log
+
+# AI
+.claude/
+
+# Database
+*.db
+
+# Project-specific
+Example_code_to_map/
+CLAUDE.md

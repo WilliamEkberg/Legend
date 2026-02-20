@@ -1,0 +1,41 @@
+# Test image — runs cargo test inside Docker so no local Rust install is needed.
+#
+# Usage:
+#   docker build -f Dockerfile.test -t scip-engine-test .
+#   docker run --rm scip-engine-test
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+
+# Copy Cargo files first for dependency caching
+COPY Cargo.toml Cargo.lock ./
+
+# Build dependencies only (dummy source)
+RUN mkdir src && echo "fn main() {}" > src/main.rs && echo "pub fn dummy() {}" > src/lib.rs \
+    && cargo test --no-run 2>/dev/null || true \
+    && rm -rf src
+
+# Copy full source + tests
+COPY src ./src
+COPY tests ./tests
+
+# Rebuild with real source and pre-compile tests
+RUN touch src/main.rs src/lib.rs && cargo test --no-run
+
+CMD ["cargo", "test"]
