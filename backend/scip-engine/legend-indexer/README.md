@@ -13,8 +13,8 @@ The fastest way to get started is pulling the pre-built image from GitHub Contai
 ./docker-pull.sh
 
 # Or manually:
-docker pull ghcr.io/wuv-ogmem/scip-engine:latest
-docker tag ghcr.io/wuv-ogmem/scip-engine:latest scip-engine
+docker pull ghcr.io/williamekberg/scip-engine:latest
+docker tag ghcr.io/williamekberg/scip-engine:latest scip-engine
 ```
 
 ## Usage

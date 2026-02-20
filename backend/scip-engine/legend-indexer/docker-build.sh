@@ -8,7 +8,7 @@
 #   ./docker-build.sh --push --no-cache  # Force rebuild everything
 #
 # Environment variables:
-#   SCIP_REGISTRY   Override registry (default: ghcr.io/wuv-ogmem)
+#   SCIP_REGISTRY   Override registry (default: ghcr.io/williamekberg)
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_IMAGE="legend-indexer-base"
 FINAL_IMAGE="scip-engine"
 TAG="latest"
-REGISTRY="${SCIP_REGISTRY:-ghcr.io/legend-llp}"
+REGISTRY="${SCIP_REGISTRY:-ghcr.io/williamekberg}"
 
 PUSH=false
 NO_CACHE=""
@@ -38,7 +38,7 @@ for arg in "$@"; do
             echo "  --no-cache    Force rebuild without Docker cache"
             echo ""
             echo "Environment variables:"
-            echo "  SCIP_REGISTRY  Override registry (default: ghcr.io/wuv-ogmem)"
+            echo "  SCIP_REGISTRY  Override registry (default: ghcr.io/williamekberg)"
             exit 0
             ;;
     esac

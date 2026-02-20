@@ -149,7 +149,7 @@ fi
 
 # SCIP engine Docker image setup
 # Priority: 1) Pull from GitHub Container Registry (fast), 2) Build locally (slow fallback)
-SCIP_REGISTRY_IMAGE="ghcr.io/legend-llp/scip-engine:latest"
+SCIP_REGISTRY_IMAGE="ghcr.io/williamekberg/scip-engine:latest"
 SCIP_LOCAL_IMAGE="scip-engine"
 
 if command -v docker &>/dev/null; then

@@ -8,14 +8,14 @@
 #   ./build-base.sh --push --no-cache  # Force rebuild without cache
 #
 # Environment variables:
-#   SCIP_REGISTRY   Override registry (default: ghcr.io/wuv-ogmem)
+#   SCIP_REGISTRY   Override registry (default: ghcr.io/williamekberg)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="legend-indexer-base"
 TAG="latest"
-REGISTRY="${SCIP_REGISTRY:-ghcr.io/legend-llp}"
+REGISTRY="${SCIP_REGISTRY:-ghcr.io/williamekberg}"
 
 echo "Building ${IMAGE_NAME}:${TAG} ..."
 echo "This installs all language runtimes — takes ~10-15 min on first build."
@@ -36,7 +36,7 @@ for arg in "$@"; do
             echo "  --no-cache   Force rebuild without Docker cache"
             echo ""
             echo "Environment variables:"
-            echo "  SCIP_REGISTRY  Override registry (default: ghcr.io/wuv-ogmem)"
+            echo "  SCIP_REGISTRY  Override registry (default: ghcr.io/williamekberg)"
             exit 0
             ;;
     esac

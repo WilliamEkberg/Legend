@@ -157,7 +157,7 @@ class TestRegistryConfig:
     """Tests for registry configuration."""
 
     def test_default_registry(self):
-        """Default registry is ghcr.io/wuv-ogmem."""
+        """Default registry is ghcr.io/williamekberg."""
         from main import SCIP_REGISTRY, SCIP_REGISTRY_IMAGE
 
         # When no env var is set

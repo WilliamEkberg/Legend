@@ -32,7 +32,7 @@ SCIP_ENGINE_DIR = Path(__file__).resolve().parent / "scip-engine"
 
 
 # Docker registry configuration
-SCIP_REGISTRY = os.environ.get("SCIP_REGISTRY", "ghcr.io/legend-llp")
+SCIP_REGISTRY = os.environ.get("SCIP_REGISTRY", "ghcr.io/williamekberg")
 SCIP_REGISTRY_IMAGE = f"{SCIP_REGISTRY}/scip-engine:latest"
 SCIP_LOCAL_IMAGE = "scip-engine"
 

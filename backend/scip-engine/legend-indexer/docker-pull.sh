@@ -13,7 +13,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Registry configuration (can be overridden via environment)
-REGISTRY="${SCIP_REGISTRY:-ghcr.io/legend-llp}"
+REGISTRY="${SCIP_REGISTRY:-ghcr.io/williamekberg}"
 BASE_IMAGE="legend-indexer-base"
 FINAL_IMAGE="scip-engine"
 
@@ -30,7 +30,7 @@ for arg in "$@"; do
             echo "  --force, -f    Re-pull even if local image exists"
             echo ""
             echo "Environment variables:"
-            echo "  SCIP_REGISTRY  Override registry (default: ghcr.io/wuv-ogmem)"
+            echo "  SCIP_REGISTRY  Override registry (default: ghcr.io/williamekberg)"
             exit 0
             ;;
     esac
