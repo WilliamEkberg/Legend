@@ -42,6 +42,12 @@ if [ "$NODE_MAJOR" -lt 18 ]; then
 fi
 echo "Using Node.js $(node -v)"
 
+# Check opencode CLI (needed for L2 classification pipeline)
+if ! command -v opencode &>/dev/null; then
+    echo "Warning: opencode CLI not found. The L2 classification pipeline will not work."
+    echo "  Install: npm i -g opencode-ai@latest"
+fi
+
 # Check Rust/Cargo is installed (needed for Tauri)
 if ! command -v cargo &>/dev/null; then
     echo "Error: Rust/Cargo not found."
@@ -58,6 +64,54 @@ if ! cargo --version &>/dev/null; then
     exit 1
 fi
 echo "Using Cargo $(cargo --version | cut -d' ' -f2)"
+
+# Check Rust version >= 1.77.2 (required by frontend/src-tauri/Cargo.toml)
+RUSTC_VERSION=$(rustc --version | cut -d' ' -f2)
+RUSTC_MAJOR=$(echo "$RUSTC_VERSION" | cut -d. -f1)
+RUSTC_MINOR=$(echo "$RUSTC_VERSION" | cut -d. -f2)
+RUSTC_PATCH=$(echo "$RUSTC_VERSION" | cut -d. -f3)
+
+RUST_OK=false
+if [ "$RUSTC_MAJOR" -gt 1 ]; then
+    RUST_OK=true
+elif [ "$RUSTC_MAJOR" -eq 1 ]; then
+    if [ "$RUSTC_MINOR" -gt 77 ]; then
+        RUST_OK=true
+    elif [ "$RUSTC_MINOR" -eq 77 ] && [ "$RUSTC_PATCH" -ge 2 ]; then
+        RUST_OK=true
+    fi
+fi
+
+if [ "$RUST_OK" = false ]; then
+    echo "Error: Rust 1.77.2+ required (found $RUSTC_VERSION)"
+    echo "  Update Rust: rustup update stable"
+    exit 1
+fi
+echo "Using Rust $RUSTC_VERSION"
+
+# Check Tauri system libraries on Linux
+if [ "$(uname -s)" = "Linux" ]; then
+    if ! command -v pkg-config &>/dev/null; then
+        echo "Error: pkg-config not found (required to build Tauri)."
+        echo "  Install: sudo apt-get install pkg-config"
+        exit 1
+    fi
+
+    MISSING_LIBS=""
+    for lib in webkit2gtk-4.1 gtk+-3.0 appindicator3-0.1 librsvg-2.0 openssl; do
+        if ! pkg-config --exists "$lib" 2>/dev/null; then
+            MISSING_LIBS="$MISSING_LIBS $lib"
+        fi
+    done
+
+    if [ -n "$MISSING_LIBS" ]; then
+        echo "Error: Missing system libraries required by Tauri:$MISSING_LIBS"
+        echo "  Install on Debian/Ubuntu:"
+        echo "    sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev librsvg2-dev libssl-dev"
+        exit 1
+    fi
+    echo "Tauri system libraries found."
+fi
 
 # Create venv if it doesn't exist
 if [ ! -d "$VENV_DIR" ]; then
@@ -99,7 +153,11 @@ SCIP_REGISTRY_IMAGE="ghcr.io/legend-llp/scip-engine:latest"
 SCIP_LOCAL_IMAGE="scip-engine"
 
 if command -v docker &>/dev/null; then
-    if ! docker image inspect "$SCIP_LOCAL_IMAGE" &>/dev/null 2>&1; then
+    if ! docker info &>/dev/null 2>&1; then
+        echo "Warning: Docker is installed but the daemon is not running."
+        echo "  SCIP indexing will fall back to local binaries."
+        echo "  Start Docker to enable containerized SCIP indexing."
+    elif ! docker image inspect "$SCIP_LOCAL_IMAGE" &>/dev/null 2>&1; then
         echo "SCIP engine image not found locally."
         echo "Attempting to pull from GitHub Container Registry..."
 
