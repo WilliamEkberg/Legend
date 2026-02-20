@@ -95,13 +95,13 @@
 
 /* ── Map nodes (shared white card style for both module and component) ── */
 .map-node {
-  padding: 100px 120px;
+  padding: 10px 12px;
   background: #ffffff;
   border: none;
-  border-radius: 24px;
-  min-width: 2200px;
+  border-radius: 4px;
+  min-width: 220px;
   cursor: pointer;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.25), 0 2px 6px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.15);
   transition: box-shadow 0.15s;
 }
 
@@ -116,35 +116,35 @@
 }
 
 .map-node:hover {
-  box-shadow: 0 4px 20px rgba(0, 229, 255, 0.25), 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 1px 6px rgba(0, 229, 255, 0.25), 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 .map-node.selected {
-  box-shadow: var(--glow-cyan), 0 2px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--glow-cyan), 0 1px 4px rgba(0, 0, 0, 0.35);
 }
 
 .map-node.has-changes {
-  border: 30px solid #00ff9d;
+  border: 3px solid #00ff9d;
   background: #efffef;
-  box-shadow: 0 0 15px rgba(0, 255, 157, 0.5), 0 0 6px rgba(0, 255, 157, 0.3), 0 4px 15px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 4px rgba(0, 255, 157, 0.5), 0 0 2px rgba(0, 255, 157, 0.3), 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 .map-node.has-changes.selected {
-  box-shadow: 0 0 15px rgba(0, 255, 157, 0.5), 0 0 6px rgba(0, 255, 157, 0.3), var(--glow-cyan), 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 4px rgba(0, 255, 157, 0.5), 0 0 2px rgba(0, 255, 157, 0.3), var(--glow-cyan), 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .map-node.has-revalidation {
-  border: 30px solid #bd93f9;
+  border: 3px solid #bd93f9;
   background: #f3eeff;
-  box-shadow: 0 0 15px rgba(189, 147, 249, 0.5), 0 0 6px rgba(189, 147, 249, 0.3), 0 4px 15px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 4px rgba(189, 147, 249, 0.5), 0 0 2px rgba(189, 147, 249, 0.3), 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 .map-node.has-revalidation.selected {
-  box-shadow: 0 0 15px rgba(189, 147, 249, 0.5), 0 0 6px rgba(189, 147, 249, 0.3), var(--glow-cyan), 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 4px rgba(189, 147, 249, 0.5), 0 0 2px rgba(189, 147, 249, 0.3), var(--glow-cyan), 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .map-node.has-changes.has-revalidation {
-  border: 30px solid;
+  border: 3px solid;
   border-image: linear-gradient(135deg, #00ff9d 50%, #bd93f9 50%) 1;
   background: linear-gradient(135deg, #efffef, #f3eeff);
 }
@@ -152,12 +152,12 @@
 .map-node-header {
   display: flex;
   align-items: center;
-  gap: 30px;
-  margin-bottom: 30px;
+  gap: 4px;
+  margin-bottom: 4px;
 }
 
 .map-node-label {
-  font-size: 7rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--text);
   overflow: hidden;
@@ -166,9 +166,9 @@
 }
 
 .map-node-badge {
-  font-size: 3rem;
-  padding: 12px 28px;
-  border-radius: 12px;
+  font-size: 0.5rem;
+  padding: 2px 6px;
+  border-radius: 2px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   flex-shrink: 0;
@@ -195,7 +195,7 @@
 .map-node-meta {
   display: flex;
   justify-content: space-between;
-  font-size: 3.5rem;
+  font-size: 0.6rem;
   color: #5a6474;
 }
 
@@ -213,25 +213,25 @@
 
 /* External dependency badge */
 .map-node-external {
-  margin-top: 40px;
+  margin-top: 4px;
   display: inline-block;
-  font-size: 3rem;
+  font-size: 0.5rem;
   font-weight: 700;
   color: #ff6b35;
   background: rgba(255, 107, 53, 0.12);
-  border: 2px solid rgba(255, 107, 53, 0.45);
-  border-radius: 14px;
-  padding: 14px 36px;
+  border: 1px solid rgba(255, 107, 53, 0.45);
+  border-radius: 2px;
+  padding: 2px 6px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
 
 /* ── Handles ── */
 .map-handle {
-  width: 120px !important;
-  height: 120px !important;
+  width: 12px !important;
+  height: 12px !important;
   background: rgba(0, 229, 255, 0.3) !important;
-  border: 6px solid rgba(0, 229, 255, 0.7) !important;
+  border: 1px solid rgba(0, 229, 255, 0.7) !important;
   border-radius: 50% !important;
   opacity: 0.6;
 }
@@ -239,7 +239,7 @@
 .map-handle:hover {
   background: rgba(0, 229, 255, 0.7) !important;
   border-color: var(--cyan) !important;
-  box-shadow: 0 0 40px rgba(0, 229, 255, 0.6);
+  box-shadow: 0 0 4px rgba(0, 229, 255, 0.6);
   opacity: 1;
   animation: handle-pulse 2s ease-in-out infinite;
 }
@@ -252,7 +252,7 @@
 /* Thicker connection line while dragging */
 .react-flow__connection-path {
   stroke: var(--cyan) !important;
-  stroke-width: 8 !important;
+  stroke-width: 1 !important;
 }
 
 .react-flow__connection {
@@ -278,9 +278,9 @@
 
 .group-node-label {
   position: absolute;
-  top: 50px;
-  left: 60px;
-  font-size: 12rem;
+  top: 6px;
+  left: 8px;
+  font-size: 1.2rem;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.12em;

@@ -54,6 +54,7 @@ import { TicketPanel } from "./TicketPanel";
 import { VersionPanel } from "./VersionPanel";
 import { CreateNodeModal } from "./CreateNodeModal";
 import { EdgeLabelPopup } from "./EdgeLabelPopup";
+import { MapErrorBoundary } from "./MapErrorBoundary";
 import "./graph.css";
 
 const nodeTypes = {
@@ -291,10 +292,17 @@ function MapViewInner() {
         setNodes(n);
         setEdges(e);
         setSelectedNode(null);
+        setError("");
       })
       .catch((err) => {
         if (cancelled) return;
         console.error("[MapView] Layout error:", err);
+        setError(
+          err instanceof Error ? err.message : "Layout computation failed"
+        );
+        setNodes([]);
+        setEdges([]);
+        setSelectedNode(null);
       });
 
     return () => {
@@ -500,6 +508,17 @@ function MapViewInner() {
       <div className="map-container">
         <div className="map-empty">
           <p className="map-error">{error}</p>
+          {mapData && (
+            <button
+              className="sidebar-btn"
+              onClick={() => {
+                setError("");
+                setFilters(defaultEdgeFilters(mapData));
+              }}
+            >
+              Reset Filters &amp; Retry
+            </button>
+          )}
           <Link to="/" className="map-back-link">
             &larr; Back to launcher
           </Link>
@@ -569,13 +588,13 @@ function MapViewInner() {
             onNodeClick={onNodeClick}
             onConnect={onConnect}
             isValidConnection={isValidConnection}
-            connectionRadius={200}
+            connectionRadius={20}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             fitView
             fitViewOptions={{ padding: 0.15 }}
-            minZoom={0.005}
-            maxZoom={1.5}
+            minZoom={0.1}
+            maxZoom={4}
             proOptions={{ hideAttribution: true }}
           >
             <Controls
@@ -694,8 +713,10 @@ function MapViewInner() {
 
 export function MapView() {
   return (
-    <ReactFlowProvider>
-      <MapViewInner />
-    </ReactFlowProvider>
+    <MapErrorBoundary>
+      <ReactFlowProvider>
+        <MapViewInner />
+      </ReactFlowProvider>
+    </MapErrorBoundary>
   );
 }

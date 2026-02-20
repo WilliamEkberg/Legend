@@ -62,16 +62,16 @@ export const AnimatedEdge = memo(function AnimatedEdge(props: EdgeProps) {
 
   // Module edges in L3: dramatically thicker. Component edges: normal range.
   const strokeWidth = isModuleEdge
-    ? Math.min(40 + Math.log2(weight) * 8, 80)
-    : Math.min(4 + Math.log2(weight) * 2.5, 14);
+    ? Math.min(4 + Math.log2(weight) * 0.8, 8)
+    : Math.min(1 + Math.log2(weight) * 0.25, 3);
 
   // Label sizing — module edges get ~4x larger labels
-  const fontSize = isModuleEdge ? 180 : 72;
-  const charW = isModuleEdge ? 105 : 42;
-  const padX = isModuleEdge ? 140 : 56;
-  const padY = isModuleEdge ? 130 : 56;
-  const borderW = isModuleEdge ? 8 : 3;
-  const borderR = isModuleEdge ? 32 : 16;
+  const fontSize = isModuleEdge ? 18 : 8;
+  const charW = isModuleEdge ? 11 : 5;
+  const padX = isModuleEdge ? 14 : 6;
+  const padY = isModuleEdge ? 13 : 6;
+  const borderW = isModuleEdge ? 1 : 0.5;
+  const borderR = isModuleEdge ? 4 : 2;
 
   // State-based opacity
   const opacity = isDimmed ? 0.3 : 1.0;
