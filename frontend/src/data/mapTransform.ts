@@ -24,15 +24,15 @@ import type {
 import { autoLayoutModules } from "./autoLayout";
 
 // ── L3 layout constants ──
-const COMPONENT_NODE_W = 2400;
-const COMPONENT_NODE_H = 700;
-const GROUP_PADDING = 400;
-const GROUP_LABEL_HEIGHT = 200;
-const REPULSION_STRENGTH = -80000;
+const COMPONENT_NODE_W = 240;
+const COMPONENT_NODE_H = 70;
+const GROUP_PADDING = 40;
+const GROUP_LABEL_HEIGHT = 24;
+const REPULSION_STRENGTH = -2000;
 
 // ── Hierarchical layout constants ──
-const LAYER_GAP = COMPONENT_NODE_H + 600;
-const HORIZONTAL_GAP = 400;
+const LAYER_GAP = COMPONENT_NODE_H + 60;
+const HORIZONTAL_GAP = 40;
 
 // ── Handle selection helper ──
 
@@ -153,7 +153,7 @@ interface GroupSimNode extends SimulationNodeDatum {
   degree: number;
 }
 
-const GROUP_GAP = 300;
+const GROUP_GAP = 30;
 
 // ── Phase 1: Per-module hierarchical layout ──
 

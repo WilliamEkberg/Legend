@@ -17,12 +17,12 @@ import type { Node } from "@xyflow/react";
 import type { MapData, ModuleNodeData } from "./types";
 
 // ── Layout constants ──
-const NODE_W = 2400;
-const NODE_H = 700;
+const NODE_W = 240;
+const NODE_H = 70;
 // Collision radius — half the diagonal so rectangular nodes don't overlap
-const COLLIDE_RADIUS = Math.sqrt(NODE_W ** 2 + NODE_H ** 2) / 2 + 100;
-const LINK_DISTANCE = 3200;
-const REPULSION_STRENGTH = -80000;
+const COLLIDE_RADIUS = Math.sqrt(NODE_W ** 2 + NODE_H ** 2) / 2 + 10;
+const LINK_DISTANCE = 320;
+const REPULSION_STRENGTH = -2000;
 const TICKS = 200;
 
 interface SimNode extends SimulationNodeDatum {
