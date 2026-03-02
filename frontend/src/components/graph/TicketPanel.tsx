@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import type { GeneratedTicket } from "../../data/types";
+import { Button } from "@/components/ui/button";
 
 interface TicketPanelProps {
   tickets: GeneratedTicket[];
@@ -35,33 +36,35 @@ function TicketCard({ ticket }: { ticket: GeneratedTicket }) {
   }
 
   return (
-    <div className="ticket-card">
-      <div className="ticket-header">
-        <h3 className="ticket-title">{ticket.title}</h3>
-        <button
-          className={`ticket-copy-btn${copied ? " copied" : ""}`}
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-semibold text-foreground">{ticket.title}</h3>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-xs h-7"
           onClick={handleCopy}
           title="Copy as markdown"
         >
           {copied ? "Copied!" : "Copy"}
-        </button>
+        </Button>
       </div>
 
-      <p className="ticket-description">{ticket.description}</p>
+      <p className="text-sm text-muted-foreground">{ticket.description}</p>
 
       {ticket.acceptance_criteria && (
-        <div className="ticket-section">
-          <span className="ticket-section-label">Acceptance Criteria</span>
-          <p className="ticket-criteria">{ticket.acceptance_criteria}</p>
+        <div className="mt-3">
+          <span className="text-xs font-medium text-muted-foreground uppercase">Acceptance Criteria</span>
+          <p className="text-sm text-foreground mt-1">{ticket.acceptance_criteria}</p>
         </div>
       )}
 
       {ticket.affected_files.length > 0 && (
-        <div className="ticket-section">
-          <span className="ticket-section-label">Files</span>
-          <ul className="ticket-files">
+        <div className="mt-3">
+          <span className="text-xs font-medium text-muted-foreground uppercase">Files</span>
+          <ul className="mt-1 space-y-0.5">
             {ticket.affected_files.map((f) => (
-              <li key={f} className="ticket-file">
+              <li key={f} className="text-xs font-mono text-muted-foreground">
                 {f}
               </li>
             ))}
@@ -96,44 +99,46 @@ export function TicketPanel({ tickets, mapCorrections, onClose }: TicketPanelPro
   return (
     <AnimatePresence>
       <motion.div
-        className="ticket-panel"
+        className="absolute inset-x-0 bottom-0 max-h-[60%] bg-card border-t border-border shadow-xl z-20 flex flex-col rounded-t-xl"
         initial={{ y: "100%" }}
         animate={{ y: 0 }}
         exit={{ y: "100%" }}
         transition={{ type: "spring", damping: 40, stiffness: 200 }}
       >
-        <div className="ticket-panel-header">
-          <div className="ticket-panel-title-row">
-            <h2 className="ticket-panel-title">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
               Tickets
-              <span className="ticket-count">{tickets.length}</span>
+              <span className="inline-flex items-center justify-center min-w-[22px] h-[22px] rounded-full bg-primary text-primary-foreground text-xs font-bold px-1.5">
+                {tickets.length}
+              </span>
             </h2>
             {mapCorrections > 0 && (
-              <span className="map-corrections-note">
+              <span className="text-xs text-muted-foreground">
                 {mapCorrections} map correction{mapCorrections !== 1 ? "s" : ""} (no code change needed)
               </span>
             )}
           </div>
-          <div className="ticket-panel-actions">
+          <div className="flex items-center gap-2">
             {tickets.length > 0 && (
-              <button className="ticket-download-btn" onClick={downloadAll}>
+              <Button variant="outline" size="sm" className="text-xs" onClick={downloadAll}>
                 Download
-              </button>
+              </Button>
             )}
             {tickets.length > 1 && (
-              <button className="ticket-copy-all-btn" onClick={copyAll}>
+              <Button variant="outline" size="sm" className="text-xs" onClick={copyAll}>
                 Copy All
-              </button>
+              </Button>
             )}
-            <button className="ticket-panel-close" onClick={onClose}>
+            <Button variant="ghost" size="sm" className="text-lg px-2" onClick={onClose}>
               &times;
-            </button>
+            </Button>
           </div>
         </div>
 
-        <div className="ticket-panel-body">
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {tickets.length === 0 ? (
-            <p className="ticket-empty">
+            <p className="text-sm text-muted-foreground italic">
               {mapCorrections > 0
                 ? "All changes were map corrections — the code already matches the map."
                 : "No tickets generated."}

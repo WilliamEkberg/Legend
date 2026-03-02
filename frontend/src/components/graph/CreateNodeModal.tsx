@@ -3,6 +3,16 @@
 import { useState } from "react";
 import { createModule, createComponent } from "../../api/client";
 import type { ViewLevel, MapModule } from "../../data/types";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 interface CreateNodeModalProps {
   level: ViewLevel;
@@ -49,99 +59,98 @@ export function CreateNodeModal({ level, modules, onSave, onClose }: CreateNodeM
   };
 
   return (
-    <div className="map-modal-overlay" onClick={onClose}>
-      <div className="map-modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="map-modal-title">
-          {level === "L2" ? "New Module" : "New Component"}
-        </h3>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {level === "L2" ? "New Module" : "New Component"}
+          </DialogTitle>
+        </DialogHeader>
 
-        <div className="map-modal-field">
-          <label className="map-modal-label">Name *</label>
-          <input
-            className="map-modal-input"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={level === "L2" ? "e.g. Auth Service" : "e.g. TokenValidator"}
-            autoFocus
-          />
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Name *</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={level === "L2" ? "e.g. Auth Service" : "e.g. TokenValidator"}
+              autoFocus
+            />
+          </div>
+
+          {level === "L2" ? (
+            <>
+              <div className="space-y-2">
+                <Label>Classification</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  value={classification}
+                  onChange={(e) => setClassification(e.target.value)}
+                >
+                  <option value="module">module</option>
+                  <option value="shared-library">shared-library</option>
+                  <option value="supporting-asset">supporting-asset</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label>Type</Label>
+                <Input
+                  value={type}
+                  onChange={(e) => setType(e.target.value)}
+                  placeholder="e.g. service, library"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Technology</Label>
+                <Input
+                  value={technology}
+                  onChange={(e) => setTechnology(e.target.value)}
+                  placeholder="e.g. Python, TypeScript"
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label>Module *</Label>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  value={moduleId}
+                  onChange={(e) => setModuleId(Number(e.target.value))}
+                >
+                  {modules.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label>Purpose</Label>
+                <Input
+                  value={purpose}
+                  onChange={(e) => setPurpose(e.target.value)}
+                  placeholder="What does this component do?"
+                />
+              </div>
+            </>
+          )}
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 
-        {level === "L2" ? (
-          <>
-            <div className="map-modal-field">
-              <label className="map-modal-label">Classification</label>
-              <select
-                className="map-modal-select"
-                value={classification}
-                onChange={(e) => setClassification(e.target.value)}
-              >
-                <option value="module">module</option>
-                <option value="shared-library">shared-library</option>
-                <option value="supporting-asset">supporting-asset</option>
-              </select>
-            </div>
-            <div className="map-modal-field">
-              <label className="map-modal-label">Type</label>
-              <input
-                className="map-modal-input"
-                value={type}
-                onChange={(e) => setType(e.target.value)}
-                placeholder="e.g. service, library"
-              />
-            </div>
-            <div className="map-modal-field">
-              <label className="map-modal-label">Technology</label>
-              <input
-                className="map-modal-input"
-                value={technology}
-                onChange={(e) => setTechnology(e.target.value)}
-                placeholder="e.g. Python, TypeScript"
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="map-modal-field">
-              <label className="map-modal-label">Module *</label>
-              <select
-                className="map-modal-select"
-                value={moduleId}
-                onChange={(e) => setModuleId(Number(e.target.value))}
-              >
-                {modules.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="map-modal-field">
-              <label className="map-modal-label">Purpose</label>
-              <input
-                className="map-modal-input"
-                value={purpose}
-                onChange={(e) => setPurpose(e.target.value)}
-                placeholder="What does this component do?"
-              />
-            </div>
-          </>
-        )}
-
-        {error && <p className="map-modal-info" style={{ color: "var(--red)" }}>{error}</p>}
-
-        <div className="map-modal-actions">
-          <button className="map-modal-cancel" onClick={onClose}>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
             Cancel
-          </button>
-          <button
-            className="map-modal-save"
+          </Button>
+          <Button
             onClick={handleSave}
             disabled={!name.trim() || saving || (level === "L3" && !moduleId)}
           >
             {saving ? "Saving..." : "Create"}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

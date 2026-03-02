@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { SelectedNode, MapDecision, MapModule, MapComponent, ChangeRecord, ValidationSummary, DecisionValidation } from "../../data/types";
 import { updateDecision, createDecision, deleteDecision, deleteModule, deleteComponent } from "../../api/client";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface DetailPanelProps {
   selected: SelectedNode;
@@ -92,34 +94,36 @@ export function DetailPanel({ selected, onClose, onDecisionChange, changeRecords
     <AnimatePresence>
       {selected && (
         <motion.div
-          className="detail-panel"
+          className="absolute top-0 right-0 h-full w-96 bg-card border-l border-border shadow-xl z-20 flex flex-col"
           initial={{ x: "100%" }}
           animate={{ x: 0 }}
           exit={{ x: "100%" }}
           transition={{ type: "spring", damping: 40, stiffness: 200 }}
         >
-          <div className="detail-panel-header">
-            <h2 className="detail-panel-title">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+            <h2 className="text-lg font-semibold text-foreground truncate">
               {selected.kind === "module"
                 ? selected.module.name
                 : selected.component.name}
             </h2>
-            <div className="detail-panel-header-actions">
-              <button
-                className="detail-panel-delete"
+            <div className="flex items-center gap-2">
+              <Button
+                variant="destructive"
+                size="sm"
+                className="text-xs h-7"
                 onClick={handleDeleteEntity}
                 disabled={deleting}
                 title={`Delete this ${selected.kind}`}
               >
-                {deleting ? "…" : "Delete"}
-              </button>
-              <button className="detail-panel-close" onClick={onClose}>
+                {deleting ? "..." : "Delete"}
+              </Button>
+              <Button variant="ghost" size="sm" className="text-lg px-2 h-7" onClick={onClose}>
                 &times;
-              </button>
+              </Button>
             </div>
           </div>
 
-          <div className="detail-panel-body">
+          <div className="flex-1 overflow-y-auto">
             {selected.kind === "module" ? (
               <ModuleDetail
                 module={selected.module}
@@ -161,17 +165,17 @@ interface DecisionsSectionProps {
 }
 
 const VALIDATION_LABELS: Record<string, { label: string; cls: string }> = {
-  updated:     { label: "Updated",     cls: "validation-badge-updated" },
-  outdated:    { label: "Outdated",    cls: "validation-badge-outdated" },
-  new:         { label: "New",         cls: "validation-badge-new" },
-  implemented: { label: "Implemented", cls: "validation-badge-implemented" },
-  diverged:    { label: "Diverged",    cls: "validation-badge-diverged" },
+  updated:     { label: "Updated",     cls: "bg-blue-500/10 text-blue-600" },
+  outdated:    { label: "Outdated",    cls: "bg-amber-500/10 text-amber-600" },
+  new:         { label: "New",         cls: "bg-green-500/10 text-green-600" },
+  implemented: { label: "Implemented", cls: "bg-green-500/10 text-green-600" },
+  diverged:    { label: "Diverged",    cls: "bg-red-500/10 text-red-600" },
 };
 
-const DIFF_STYLES: Record<ChangeRecord["action"], { border: string; badge: string; cls: string }> = {
-  add:    { border: "var(--green)",  badge: "+", cls: "diff-add" },
-  edit:   { border: "var(--amber)",  badge: "~", cls: "diff-edit" },
-  remove: { border: "var(--red)",    badge: "−", cls: "diff-remove" },
+const DIFF_STYLES: Record<ChangeRecord["action"], { borderCls: string; badge: string; badgeCls: string }> = {
+  add:    { borderCls: "border-l-green-500", badge: "+", badgeCls: "bg-green-500/10 text-green-600" },
+  edit:   { borderCls: "border-l-amber-500", badge: "~", badgeCls: "bg-amber-500/10 text-amber-600" },
+  remove: { borderCls: "border-l-red-500",   badge: "−", badgeCls: "bg-red-500/10 text-red-600" },
 };
 
 function DecisionsSection({
@@ -287,11 +291,11 @@ function DecisionsSection({
   const groups = groupByCategory(decisions);
 
   return (
-    <div className="detail-section">
-      <div className="detail-section-header">
-        <h3 className="detail-section-title">Decisions</h3>
+    <div className="px-4 py-3 border-b border-border">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-semibold text-foreground">Decisions</h3>
         <button
-          className="decision-add-btn"
+          className="w-6 h-6 rounded flex items-center justify-center text-sm text-primary hover:bg-muted transition-colors"
           onClick={() => setAdding((v) => !v)}
           title="Add decision"
         >
@@ -300,8 +304,8 @@ function DecisionsSection({
       </div>
 
       {Object.entries(groups).map(([cat, items]) => (
-        <div key={cat} className="decision-group">
-          <h4 className="decision-category">{formatCategory(cat)}</h4>
+        <div key={cat} className="mb-3">
+          <h4 className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{formatCategory(cat)}</h4>
           {items.map((d) => {
             const diffAction = changeByDecisionId.get(d.id);
             const diffStyle = diffAction ? DIFF_STYLES[diffAction] : null;
@@ -310,13 +314,16 @@ function DecisionsSection({
             return (
               <div
                 key={d.id}
-                className={`decision-item${diffStyle ? ` ${diffStyle.cls}` : ""}${valInfo ? ` validation-${validation!.status}` : ""}`}
-                style={diffStyle ? { borderLeftColor: diffStyle.border } : undefined}
+                className={cn(
+                  "border-l-2 border-transparent pl-3 py-1.5 mb-1",
+                  diffStyle && `border-l-4 ${diffStyle.borderCls}`,
+                  valInfo && "bg-muted/30",
+                )}
               >
                 {editingId === d.id ? (
-                  <div className="decision-edit-container">
+                  <div className="space-y-2">
                     <select
-                      className="decision-edit-category"
+                      className="flex h-8 w-full rounded-md border border-input bg-transparent px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       value={editCategory}
                       onChange={(e) => setEditCategory(e.target.value)}
                     >
@@ -328,7 +335,7 @@ function DecisionsSection({
                     </select>
                     <textarea
                       ref={textareaRef}
-                      className="decision-edit-textarea"
+                      className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
                       value={editText}
                       onChange={(e) => setEditText(e.target.value)}
                       onKeyDown={(e) => {
@@ -337,53 +344,54 @@ function DecisionsSection({
                       }}
                       rows={3}
                     />
-                    <div className="decision-edit-actions">
-                      <button
-                        className="decision-save-btn"
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        className="text-xs h-7"
                         onClick={() => saveEdit(d)}
                         disabled={saving}
                       >
                         Save
-                      </button>
-                      <button className="decision-cancel-btn" onClick={cancelEdit}>
+                      </Button>
+                      <Button variant="outline" size="sm" className="text-xs h-7" onClick={cancelEdit}>
                         Cancel
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 ) : (
-                  <div className="decision-view">
+                  <div>
                     {validation?.status === "updated" && validation.old_text && (
-                      <span className="validation-old-text">{validation.old_text}</span>
+                      <span className="text-xs text-muted-foreground line-through block mb-0.5">{validation.old_text}</span>
                     )}
                     <span
-                      className="decision-text"
+                      className="text-sm text-foreground cursor-pointer hover:text-primary transition-colors"
                       onClick={() => startEdit(d)}
                       title="Click to edit"
                     >
                       {d.text}
                     </span>
-                    <div className="decision-item-footer">
+                    <div className="flex items-center gap-2 mt-1">
                       {valInfo && (
                         <span
-                          className={`validation-badge ${valInfo.cls}`}
+                          className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium", valInfo.cls)}
                           title={validation?.reason ?? undefined}
                         >
                           {valInfo.label}
                         </span>
                       )}
                       {diffStyle ? (
-                        <span className={`diff-badge diff-badge-${diffAction}`}>
+                        <span className={cn("text-[10px] px-1.5 py-0.5 rounded font-bold", diffStyle.badgeCls)}>
                           {diffStyle.badge}
                         </span>
                       ) : !valInfo ? (
-                        <span className="decision-source">{d.source}</span>
+                        <span className="text-[10px] text-muted-foreground">{d.source}</span>
                       ) : null}
                       <button
-                        className="decision-delete-btn"
+                        className="text-[10px] text-destructive hover:text-destructive/80 ml-auto"
                         onClick={() => handleDelete(d.id)}
                         title="Delete decision"
                       >
-                        ×
+                        &times;
                       </button>
                     </div>
                   </div>
@@ -395,17 +403,17 @@ function DecisionsSection({
       ))}
 
       {decisions.length === 0 && !adding && (
-        <p className="decision-empty">No decisions yet. Click + to add one.</p>
+        <p className="text-sm text-muted-foreground italic">No decisions yet. Click + to add one.</p>
       )}
 
       {saveError && (
-        <p className="decision-error">{saveError}</p>
+        <p className="text-sm text-destructive mt-1">{saveError}</p>
       )}
 
       {adding && (
-        <div className="decision-add-form">
+        <div className="space-y-2 mt-2 border-l-4 border-primary pl-3 py-2">
           <select
-            className="decision-edit-category"
+            className="flex h-8 w-full rounded-md border border-input bg-transparent px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             value={newCategory}
             onChange={(e) => setNewCategory(e.target.value)}
           >
@@ -417,8 +425,8 @@ function DecisionsSection({
           </select>
           <textarea
             ref={newTextareaRef}
-            className="decision-edit-textarea"
-            placeholder="Describe the technical decision…"
+            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
+            placeholder="Describe the technical decision..."
             value={newText}
             onChange={(e) => setNewText(e.target.value)}
             onKeyDown={(e) => {
@@ -427,17 +435,18 @@ function DecisionsSection({
             }}
             rows={3}
           />
-          <div className="decision-edit-actions">
-            <button
-              className="decision-save-btn"
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              className="text-xs h-7"
               onClick={handleAdd}
               disabled={saving || !newText.trim()}
             >
               Add
-            </button>
-            <button className="decision-cancel-btn" onClick={() => setAdding(false)}>
+            </Button>
+            <Button variant="outline" size="sm" className="text-xs h-7" onClick={() => setAdding(false)}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -462,22 +471,22 @@ function ModuleDetail({
 }) {
   return (
     <>
-      <div className="detail-section">
-        <div className="detail-row">
-          <span className="detail-label">Type</span>
-          <span className="detail-value">{module.type}</span>
+      <div className="px-4 py-3 border-b border-border space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Type</span>
+          <span className="text-sm text-foreground">{module.type}</span>
         </div>
-        <div className="detail-row">
-          <span className="detail-label">Classification</span>
-          <span className="detail-value">{module.classification}</span>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Classification</span>
+          <span className="text-sm text-foreground">{module.classification}</span>
         </div>
-        <div className="detail-row">
-          <span className="detail-label">Technology</span>
-          <span className="detail-value">{module.technology}</span>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Technology</span>
+          <span className="text-sm text-foreground">{module.technology}</span>
         </div>
-        <div className="detail-row">
-          <span className="detail-label">Deployment</span>
-          <span className="detail-value">{module.deployment_target}</span>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Deployment</span>
+          <span className="text-sm text-foreground">{module.deployment_target}</span>
         </div>
       </div>
 
@@ -492,13 +501,13 @@ function ModuleDetail({
       />
 
       {module.components.length > 0 && (
-        <div className="detail-section">
-          <h3 className="detail-section-title">
+        <div className="px-4 py-3 border-b border-border">
+          <h3 className="text-sm font-semibold text-foreground mb-2">
             Components ({module.components.length})
           </h3>
-          <ul className="detail-list">
+          <ul className="space-y-0.5">
             {module.components.map((c) => (
-              <li key={c.id} className="detail-list-item">
+              <li key={c.id} className="text-sm text-foreground">
                 {c.name}
               </li>
             ))}
@@ -507,11 +516,11 @@ function ModuleDetail({
       )}
 
       {module.directories.length > 0 && (
-        <div className="detail-section">
-          <h3 className="detail-section-title">Directories</h3>
-          <ul className="detail-list mono">
+        <div className="px-4 py-3 border-b border-border">
+          <h3 className="text-sm font-semibold text-foreground mb-2">Directories</h3>
+          <ul className="space-y-0.5">
             {module.directories.map((d) => (
-              <li key={d} className="detail-list-item">
+              <li key={d} className="text-xs font-mono text-muted-foreground">
                 {d}
               </li>
             ))}
@@ -543,20 +552,20 @@ function ComponentDetail({
 }) {
   return (
     <>
-      <div className="detail-section">
-        <div className="detail-row">
-          <span className="detail-label">Module</span>
-          <span className="detail-value">{moduleName}</span>
+      <div className="px-4 py-3 border-b border-border space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Module</span>
+          <span className="text-sm text-foreground">{moduleName}</span>
         </div>
         {component.purpose && (
-          <div className="detail-row">
-            <span className="detail-label">Purpose</span>
-            <span className="detail-value">{component.purpose}</span>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted-foreground">Purpose</span>
+            <span className="text-sm text-foreground">{component.purpose}</span>
           </div>
         )}
-        <div className="detail-row">
-          <span className="detail-label">Confidence</span>
-          <span className="detail-value">{component.confidence}</span>
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">Confidence</span>
+          <span className="text-sm text-foreground">{component.confidence}</span>
         </div>
       </div>
 
@@ -571,21 +580,29 @@ function ComponentDetail({
       />
 
       {component.files.length > 0 && (
-        <div className="detail-section">
-          <h3 className="detail-section-title">
+        <div className="px-4 py-3 border-b border-border">
+          <h3 className="text-sm font-semibold text-foreground mb-2">
             Files ({component.files.length})
           </h3>
-          <ul className="detail-list mono">
+          <ul className="space-y-0.5">
             {component.files.map((f) => {
               const isNew = newFilePaths.has(f.path);
               return (
                 <li
                   key={f.path}
-                  className={`detail-list-item${f.is_test ? " test-file" : ""}${isNew ? " new-file" : ""}`}
+                  className={cn(
+                    "text-xs font-mono text-muted-foreground flex items-center gap-2",
+                    f.is_test && "text-muted-foreground/60",
+                    isNew && "text-green-600",
+                  )}
                 >
                   {f.path}
-                  {f.is_test && <span className="test-badge">test</span>}
-                  {isNew && <span className="validation-badge validation-badge-new">New</span>}
+                  {f.is_test && (
+                    <span className="text-[10px] px-1 py-0.5 rounded bg-muted text-muted-foreground">test</span>
+                  )}
+                  {isNew && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 font-medium">New</span>
+                  )}
                 </li>
               );
             })}

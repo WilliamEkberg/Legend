@@ -1,6 +1,9 @@
 // Doc: Natural_Language_Code/Frontend/info_frontend.md
 
 import type { ViewLevel, EdgeFilters } from "../../data/types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
 
 interface MapSidebarProps {
   level: ViewLevel;
@@ -58,62 +61,78 @@ export function MapSidebar({
   }
 
   return (
-    <div className="map-sidebar">
-      <div className="sidebar-section">
-        <h3 className="sidebar-title">Level</h3>
-        <div className="sidebar-toggle">
-          <button
-            className={`toggle-btn ${level === "L2" ? "active" : ""}`}
+    <div className="w-56 h-full bg-card border-r border-border flex flex-col overflow-y-auto shrink-0">
+      {/* Level toggle */}
+      <div className="p-3">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Level</h3>
+        <div className="flex gap-1">
+          <Button
+            variant={level === "L2" ? "default" : "outline"}
+            size="sm"
+            className="flex-1 text-xs"
             onClick={() => onLevelChange("L2")}
           >
             L2 Modules
-          </button>
-          <button
-            className={`toggle-btn ${level === "L3" ? "active" : ""}`}
+          </Button>
+          <Button
+            variant={level === "L3" ? "default" : "outline"}
+            size="sm"
+            className="flex-1 text-xs"
             onClick={() => onLevelChange("L3")}
             disabled={!l3Available}
             title={l3Available ? undefined : "Run Part 2 first"}
           >
             L3 Components
-          </button>
+          </Button>
         </div>
       </div>
 
-      <div className="sidebar-section">
-        <h3 className="sidebar-title">Search</h3>
-        <input
+      <Separator />
+
+      {/* Search */}
+      <div className="p-3">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Search</h3>
+        <Input
           type="text"
-          className="sidebar-search"
           placeholder="Filter nodes..."
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           spellCheck={false}
+          className="h-8 text-xs"
         />
       </div>
 
+      <Separator />
+
+      {/* Edge type filters */}
       {edgeTypes.length > 0 && (
-        <div className="sidebar-section">
-          <h3 className="sidebar-title">Edge Types</h3>
-          <div className="sidebar-checkboxes">
-            {edgeTypes.map((type) => (
-              <label key={type} className="sidebar-checkbox">
-                <input
-                  type="checkbox"
-                  checked={filters.types.has(type)}
-                  onChange={() => toggleEdgeType(type)}
-                />
-                <span>{type}</span>
-              </label>
-            ))}
+        <>
+          <div className="p-3">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Edge Types</h3>
+            <div className="space-y-1.5">
+              {edgeTypes.map((type) => (
+                <label key={type} className="flex items-center gap-2 text-xs text-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={filters.types.has(type)}
+                    onChange={() => toggleEdgeType(type)}
+                    className="rounded border-border"
+                  />
+                  <span>{type}</span>
+                </label>
+              ))}
+            </div>
           </div>
-        </div>
+          <Separator />
+        </>
       )}
 
-      <div className="sidebar-section">
-        <h3 className="sidebar-title">Min Weight</h3>
+      {/* Min weight slider */}
+      <div className="p-3">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Min Weight</h3>
         <input
           type="range"
-          className="sidebar-slider"
+          className="w-full accent-primary"
           min={0}
           max={weightRange.max}
           step={weightRange.max > 20 ? Math.ceil(weightRange.max / 20) : 0.5}
@@ -122,73 +141,83 @@ export function MapSidebar({
             onFiltersChange({ ...filters, minWeight: Number(e.target.value) })
           }
         />
-        <span className="slider-value">
+        <span className="text-xs text-muted-foreground">
           {filters.minWeight} / {weightRange.max}
         </span>
       </div>
 
-      <div className="sidebar-section">
-        <button
-          className="sidebar-btn"
-          onClick={onFitView}
-        >
+      <Separator />
+
+      {/* Actions */}
+      <div className="p-3">
+        <Button variant="outline" size="sm" className="w-full text-xs" onClick={onFitView}>
           Fit View
-        </button>
+        </Button>
       </div>
 
-      <div className="sidebar-section">
-        <button
-          className="sidebar-btn sidebar-btn-export"
+      <div className="p-3 pt-0">
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full text-xs"
           onClick={onExportMap}
           disabled={exporting}
           title="Download the full architecture map as a JSON file"
         >
-          {exporting ? "Exporting…" : "Export Map JSON"}
-        </button>
+          {exporting ? "Exporting..." : "Export Map JSON"}
+        </Button>
       </div>
 
-      <div className="sidebar-section">
-        <h3 className="sidebar-title">History</h3>
-        <button
-          className="sidebar-btn sidebar-btn-history"
-          onClick={onBrowseVersions}
-        >
+      <Separator />
+
+      {/* History */}
+      <div className="p-3">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">History</h3>
+        <Button variant="outline" size="sm" className="w-full text-xs" onClick={onBrowseVersions}>
           Browse Versions
-        </button>
-        <button
-          className="sidebar-btn sidebar-btn-snapshot"
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full text-xs mt-1.5"
           onClick={onSaveSnapshot}
           disabled={savingSnapshot}
-          style={{ marginTop: 6 }}
         >
           {savingSnapshot ? "Saving..." : "Save Snapshot"}
-        </button>
+        </Button>
       </div>
 
-      <div className="sidebar-section sidebar-tickets">
-        <h3 className="sidebar-title">
+      <Separator />
+
+      {/* Changes & Tickets */}
+      <div className="p-3">
+        <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2">
           Changes
           {changeCount > 0 && (
-            <span className="change-count-badge">{changeCount}</span>
+            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] rounded-full bg-primary text-primary-foreground text-[10px] font-bold px-1">
+              {changeCount}
+            </span>
           )}
         </h3>
-        <button
-          className={`sidebar-btn sidebar-btn-tickets${generating ? " generating" : ""}`}
+        <Button
+          size="sm"
+          className="w-full text-xs"
           onClick={onGenerateTickets}
           disabled={generating || changeCount === 0}
           title={changeCount === 0 ? "No changes since last baseline" : "Generate implementation tickets from map changes"}
         >
-          {generating ? "Generating…" : "Generate Tickets"}
-        </button>
-        <button
-          className="sidebar-btn sidebar-btn-view-tickets"
+          {generating ? "Generating..." : "Generate Tickets"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full text-xs mt-1.5"
           onClick={onViewTickets}
           disabled={loadingTickets}
           title="View previously generated tickets"
-          style={{ marginTop: 6 }}
         >
-          {loadingTickets ? "Loading…" : "View Tickets"}
-        </button>
+          {loadingTickets ? "Loading..." : "View Tickets"}
+        </Button>
       </div>
     </div>
   );

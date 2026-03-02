@@ -156,8 +156,13 @@ Map visualization:
 | `frontend/src/App.tsx` | Terminal UI: ASCII logo, form, run button, output display, full pipeline orchestration (chains parts 1–3 sequentially with progress indicator) |
 | `frontend/src/api/client.ts` | `runOpenCode()` fetch wrapper, request/response types |
 | `frontend/src/main.tsx` | React entry point |
-| `frontend/src/index.css` | Global CSS: variables, fonts, scanline overlay |
-| `frontend/src/App.css` | Terminal layout, fields, button, output blocks |
+| `frontend/src/index.css` | Tailwind CSS: `@tailwind` directives, HSL design tokens (light + dark), node/edge color vars, scrollbar styles, React Flow overrides |
+| `frontend/src/lib/utils.ts` | `cn()` utility (clsx + tailwind-merge) for conditional class names |
+| `frontend/src/components/ThemeToggle.tsx` | Light/dark mode toggle button (Sun/Moon icons via lucide-react, useTheme from next-themes) |
+| `frontend/src/components/ui/*.tsx` | shadcn/ui components: button, badge, card, input, label, select, tabs, scroll-area, switch, slider, separator, dialog, dropdown-menu, tooltip, sonner, skeleton |
+| `frontend/tailwind.config.ts` | Tailwind CSS config: HSL color tokens, font families, animations, content paths |
+| `frontend/postcss.config.js` | PostCSS config: tailwindcss + autoprefixer plugins |
+| `frontend/components.json` | shadcn/ui config (rsc: false, aliases, style: default) |
 | `frontend/src-tauri/src/lib.rs` | Tauri runtime init + debug logging |
 | `frontend/src-tauri/tauri.conf.json` | Window config (720x700), dev URL, build commands |
 | `frontend/vite.config.ts` | React plugin, `/api` proxy to localhost:8000 |
@@ -194,24 +199,57 @@ Map visualization:
 
 #### Dependencies
 
-- Current npm: `react` ^19.2, `react-dom` ^19.2, `vite` ^7.3, `typescript` ~5.9, `@tauri-apps/cli` ^2.10
+- Core npm: `react` ^19.2, `react-dom` ^19.2, `vite` ^7.3, `typescript` ~5.9, `@tauri-apps/cli` ^2.10
 - Map npm: `@xyflow/react` (graph rendering), `framer-motion` (panel animations), `d3-force` ^3.0 (force-directed graph layout), `react-router-dom` ^7.13 (client-side routing)
+- Styling npm: `tailwindcss` ^3.4, `tailwindcss-animate`, `autoprefixer`, `postcss`, `tailwind-merge`, `clsx`, `class-variance-authority`
+- UI npm: `lucide-react` (icons), `next-themes` (light/dark toggle), `sonner` (toast notifications), `@radix-ui/react-slot`, `@radix-ui/react-tabs`, `@radix-ui/react-scroll-area`, `@radix-ui/react-switch`, `@radix-ui/react-slider`, `@radix-ui/react-separator`, `@radix-ui/react-label`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-dialog`, `@radix-ui/react-tooltip`, `@radix-ui/react-select`
 - Cargo: `tauri` 2.10, `serde`/`serde_json`, `log`, `tauri-plugin-log`
 
-#### Design System (CSS variables, from index.css)
+#### Design System (Tailwind CSS + HSL CSS variables)
 
-| Variable | Value | Usage |
-|----------|-------|-------|
-| `--bg` | `#0a0e14` | Page background |
-| `--surface` | `#0d1117` | Terminal/card background |
-| `--border` | `#1e2a3a` | Border color |
-| `--cyan` | `#00e5ff` | Accent (logo, focus, selected node) |
-| `--green` | `#00ff9d` | Success, prompts |
-| `--red` | `#ff3d5a` | Errors |
-| `--amber` | `#ffb300` | Warnings |
-| `--purple` | `#bd93f9` | Accent secondary |
-| `--text` | `#c5cdd8` | Primary text |
-| `--text-dim` | `#4a5568` | Muted text |
+Uses Tailwind CSS with HSL CSS variable tokens. Light/dark mode toggled via `.dark` class on `<html>` (managed by `next-themes`). All components use semantic Tailwind classes (`bg-background`, `text-primary`, `border-border`, etc.).
+
+**Fonts:** Inter (UI text), Lora (headings), Space Mono (code/monospace)
+
+**Light Theme** (warm cream / forest green):
+
+| Token | HSL | Usage |
+|-------|-----|-------|
+| `--background` | 40 33% 96% | Page background |
+| `--foreground` | 150 25% 20% | Primary text |
+| `--primary` | 150 25% 28% | Buttons, accents, ASCII logo |
+| `--card` | 40 30% 98% | Cards, panels, surfaces |
+| `--muted` | 40 15% 92% | Dimmed backgrounds |
+| `--muted-foreground` | 150 10% 45% | Secondary text |
+| `--border` | 40 15% 88% | Borders, dividers |
+| `--destructive` | 0 65% 50% | Error/delete actions |
+
+**Dark Theme** (deep forest / bright green):
+
+| Token | HSL | Usage |
+|-------|-----|-------|
+| `--background` | 150 20% 10% | Page background |
+| `--foreground` | 40 30% 95% | Primary text |
+| `--primary` | 150 30% 50% | Buttons, accents, ASCII logo |
+| `--card` | 150 20% 14% | Cards, panels, surfaces |
+| `--muted` | 150 15% 20% | Dimmed backgrounds |
+| `--muted-foreground` | 150 10% 60% | Secondary text |
+| `--border` | 150 10% 25% | Borders, dividers |
+| `--destructive` | 0 60% 55% | Error/delete actions |
+
+**Node Type Colors** (shared, both themes):
+
+| Variable | HSL | Color |
+|----------|-----|-------|
+| `--node-component` | 150 40% 35% | Forest green |
+| `--node-api` | 180 50% 35% | Cyan/teal |
+| `--node-utility` | 35 70% 50% | Gold/amber |
+| `--node-data` | 200 60% 45% | Sky blue |
+| `--node-config` | 150 10% 50% | Gray-green |
+| `--node-problem` | 0 65% 55% | Red |
+| `--node-rust` | 15 70% 50% | Orange |
+| `--node-actor` | 280 45% 55% | Purple |
+| `--node-external` | 220 50% 50% | Blue |
 
 ---
 
@@ -234,7 +272,11 @@ Map visualization:
 | Backend communication | Vite proxy to FastAPI | Same-origin; backend owns DB access and export |
 | Data transform layer | Dedicated `mapTransform.ts` + `autoLayout.ts` | Separates DB shape from @xyflow shape; async layout computation; testable |
 | State management | React useState | useState for UI (selected node, level, filters, search); async layout computed in useEffect |
-| Styling | CSS variables (index.css) | Consistent theming; simple terminal aesthetic; no Tailwind overhead |
+| Styling | Tailwind CSS + shadcn/ui + CSS variables | Utility-first CSS with consistent design tokens; shadcn/ui provides accessible Radix UI-based components |
+| Component library | shadcn/ui (Radix UI primitives) | Accessible, consistent, copy-paste components — Button, Dialog, Input, Select, Tabs, ScrollArea, etc. |
+| Theme switching | next-themes with class-based dark mode | Light/dark toggle via `.dark` class on `<html>`; user preference persisted to localStorage |
+| Typography | Inter (UI), Lora (headings), Space Mono (code) | Warm, readable font stack matching Context viewer design system |
+| Toast notifications | Sonner | Non-blocking toast notifications; replaces `alert()` calls |
 
 ---
 
@@ -301,7 +343,7 @@ Map visualization:
 - [x] Add "+ Module/Component" button to map topbar
 - [x] Wire `onConnect` + `isValidConnection` into ReactFlow for edge dragging
 - [x] Add `refreshMap()` callback to reload graph after create operations
-- [x] Add modal CSS styles (`.map-modal-*`, `.topbar-create-btn`)
+- [x] Add modal styles (shadcn Dialog components)
 
 ### Green Highlight on Nodes with Pending Changes
 
@@ -312,14 +354,14 @@ Map visualization:
 - [x] `GET /api/change-records`: Read context directly from row — no enrichment queries needed
 - [x] Ticket generation: Same simplification — context read from row
 - [x] Frontend: `changedNodeIds` derived from `changeRecords`, `hasChanges` injected into node data
-- [x] CSS: 30px green border + green-tinted background + large glow for `.map-node.has-changes`
+- [x] MapNode: `ring-2 ring-amber-500` Tailwind classes for `.has-changes` state
 
 ### Re-validation & Map Versioning
 
 - [x] Add `ValidationSummary`, `DecisionValidation`, `MapVersion`, `VersionDecision`, `VersionComparison`, `ValidationRun` types to `types.ts`
 - [x] Add 7 new API client functions for versions and validation to `client.ts`
-- [x] Add purple `.has-revalidation` highlighting CSS (border, glow, gradient split with green)
-- [x] Add validation badge CSS (updated=purple, outdated=red, new=purple, implemented=green, diverged=amber)
+- [x] Add purple `.has-revalidation` highlighting (ring-2 ring-blue-500 Tailwind classes)
+- [x] Add validation badge styles (updated=blue, outdated=red, new=purple, implemented=green, diverged=amber — Tailwind utility classes)
 - [x] Update `MapNode.tsx` with `hasRevalidation` flag
 - [x] Update `MapView.tsx` with `validationSummary` state, `revalidatedNodeIds`, `styledNodes` injection, VersionPanel wiring
 - [x] Update `DetailPanel.tsx` with validation badges per decision (status label + hover tooltip with reason + old text strikethrough for updated)
@@ -384,12 +426,6 @@ Replaces single global d3-force simulation with per-module simulations for bette
 
 ---
 
-## Long Term Planned
-
-- Migration from plain CSS to Tailwind + shadcn-ui
-
----
-
 ## Log
 
 - 2026-02-16 :: william :: Created doc (Section 1 + Section 2 draft)
@@ -414,3 +450,4 @@ Replaces single global d3-force simulation with per-module simulations for bette
 - 2026-02-20 :: william :: Rewrote L3 layout as per-module simulation pipeline. Replaced single global d3-force simulation + clustering force + pairwise overlap resolution with 3-phase approach: Phase 1 runs isolated d3-force per module with adaptive parameters (link distance 1920→3200 and repulsion 1x→1.5x based on intra-module edge density). Phase 2 positions module groups via second simulation (area-proportional repulsion, per-node collide radius from bounding box, cross-module + module edges as links). Phase 3 composes final positions. GROUP_PADDING scales by intra-module edge count. L2 layout updated with density-aware collide radius (busy modules get 10-40% larger). Files: mapTransform.ts (buildL3 rewrite, layoutModule, layoutModuleGroups), autoLayout.ts (per-node collide radius).
 - 2026-02-20 :: william :: Replaced per-module d3-force layout with hierarchical layered layout for L3 view. layoutModule() now uses degree-based BFS layering: highest-degree component at top (layer 0), neighbors at layer 1, etc. Barycenter heuristic orders nodes within layers to minimize edge crossings (two passes: top-down + bottom-up). Disconnected components placed in grid below hierarchy. Multiple connected subgraphs laid out side-by-side. Module group positioning (Phase 2) still uses d3-force. Also: dynamic weight slider (max computed from actual edge data via getWeightRange()), MapSidebar shows "min / max" values. Files: mapTransform.ts (layoutModule rewrite, getWeightRange), MapSidebar.tsx (weightRange prop), MapView.tsx (weightRange memo + prop pass).
 - 2026-02-20 :: william :: Performance fixes + Tauri download fix. (1) Reduced box-shadow blur from 200px/80px to 15px/6px on .has-changes and .has-revalidation nodes in graph.css — WKWebView was GPU-thrashing on large blurs. (2) Stopped infinite CSS handle-pulse animation on all 8 handles per node (moved to :hover only). (3) Added React.memo() to MapNode, AnimatedEdge, GroupNode to prevent unnecessary re-renders. (4) Fixed Tauri file download: blob URL downloads don't work in WKWebView, replaced with Tauri dialog+fs plugins (save dialog + writeTextFile) for both ticket download and map export. Added tauri-plugin-dialog and tauri-plugin-fs to Cargo.toml, lib.rs, capabilities. (5) Reduced d3-force ticks: autoLayout 400→200, mapTransform 300→150. (6) Raised ReactFlow minZoom from 0.001 to 0.1. (7) Tuned framer-motion springs: damping 25-28→40, stiffness 300→200 for faster settling in DetailPanel, TicketPanel, VersionPanel.
+- 2026-02-28 :: william :: Frontend theme overhaul: migrated from plain CSS to Tailwind CSS + shadcn/ui. Adopted Context viewer design system with dual light/dark themes (warm cream/forest green light, deep forest/bright green dark). Added next-themes toggle, sonner toasts, lucide-react icons. Replaced App.css and graph.css (~1800 lines) with Tailwind utility classes across all 11 graph components + launcher. New files: tailwind.config.ts, postcss.config.js, components.json, lib/utils.ts, ThemeToggle.tsx, 16 shadcn/ui components. Fonts: Inter (UI), Lora (headings), Space Mono (code). All component logic unchanged.

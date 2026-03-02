@@ -7,23 +7,23 @@ import {
 } from "@xyflow/react";
 import type { MapEdgeData } from "../../data/types";
 
-// Edge type color mapping
+// Edge type color mapping — uses CSS variables from the design system
 const EDGE_TYPE_COLORS: Record<string, { normal: string; highlighted: string }> = {
   call: {
-    normal: "var(--cyan)",
-    highlighted: "var(--green)",
+    normal: "hsl(var(--node-api))",
+    highlighted: "hsl(var(--edge-highlight))",
   },
   import: {
-    normal: "var(--purple)",
-    highlighted: "var(--green)",
+    normal: "hsl(var(--node-actor))",
+    highlighted: "hsl(var(--edge-highlight))",
   },
   inheritance: {
-    normal: "var(--green)",
-    highlighted: "var(--green)",
+    normal: "hsl(var(--node-component))",
+    highlighted: "hsl(var(--edge-highlight))",
   },
   "depends-on": {
-    normal: "var(--cyan)",
-    highlighted: "var(--green)",
+    normal: "hsl(var(--node-api))",
+    highlighted: "hsl(var(--edge-highlight))",
   },
 };
 
@@ -97,7 +97,7 @@ export const AnimatedEdge = memo(function AnimatedEdge(props: EdgeProps) {
             y={-padY}
             width={label.length * charW + padX * 2}
             height={padY * 2}
-            fill="var(--bg, #0d1117)"
+            fill="hsl(var(--background))"
             fillOpacity={0.9}
             stroke={edgeColor}
             strokeWidth={borderW}

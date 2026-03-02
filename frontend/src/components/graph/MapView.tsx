@@ -55,7 +55,8 @@ import { VersionPanel } from "./VersionPanel";
 import { CreateNodeModal } from "./CreateNodeModal";
 import { EdgeLabelPopup } from "./EdgeLabelPopup";
 import { MapErrorBoundary } from "./MapErrorBoundary";
-import "./graph.css";
+import { ThemeToggle } from "../ThemeToggle";
+import { Button } from "@/components/ui/button";
 
 const nodeTypes = {
   mapNode: MapNode,
@@ -491,35 +492,36 @@ function MapViewInner() {
     [refreshChangeRecords],
   );
 
-  // Empty state
+  // Loading state
   if (loading) {
     return (
-      <div className="map-container">
-        <div className="map-empty">
-          <div className="map-spinner" />
+      <div className="flex w-screen h-screen bg-background overflow-hidden">
+        <div className="flex flex-col items-center justify-center h-full w-full gap-4 text-muted-foreground">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
           <p>Loading architecture map...</p>
         </div>
       </div>
     );
   }
 
+  // Error state
   if (error) {
     return (
-      <div className="map-container">
-        <div className="map-empty">
-          <p className="map-error">{error}</p>
+      <div className="flex w-screen h-screen bg-background overflow-hidden">
+        <div className="flex flex-col items-center justify-center h-full w-full gap-4 text-muted-foreground">
+          <p className="text-destructive font-medium">{error}</p>
           {mapData && (
-            <button
-              className="sidebar-btn"
+            <Button
+              variant="outline"
               onClick={() => {
                 setError("");
                 setFilters(defaultEdgeFilters(mapData));
               }}
             >
               Reset Filters &amp; Retry
-            </button>
+            </Button>
           )}
-          <Link to="/" className="map-back-link">
+          <Link to="/" className="text-sm text-primary hover:text-primary/80 mt-2">
             &larr; Back to launcher
           </Link>
         </div>
@@ -527,15 +529,16 @@ function MapViewInner() {
     );
   }
 
+  // Empty state
   if (!mapData || mapData.modules.length === 0) {
     return (
-      <div className="map-container">
-        <div className="map-empty">
+      <div className="flex w-screen h-screen bg-background overflow-hidden">
+        <div className="flex flex-col items-center justify-center h-full w-full gap-4 text-muted-foreground">
           <p>No architecture map data found.</p>
-          <p className="map-empty-hint">
+          <p className="text-sm text-muted-foreground/70">
             Run the pipeline first to generate the architecture map.
           </p>
-          <Link to="/" className="map-back-link">
+          <Link to="/" className="text-sm text-primary hover:text-primary/80 mt-2">
             &larr; Back to launcher
           </Link>
         </div>
@@ -544,7 +547,7 @@ function MapViewInner() {
   }
 
   return (
-    <div className="map-container">
+    <div className="relative flex w-screen h-screen bg-background overflow-hidden">
       <MapSidebar
         level={level}
         onLevelChange={setLevel}
@@ -567,19 +570,20 @@ function MapViewInner() {
         onSaveSnapshot={handleSaveSnapshot}
         savingSnapshot={savingSnapshot}
       />
-      <div className="map-canvas">
-        <div className="map-topbar">
-          <Link to="/" className="map-back-link">
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <div className="flex items-center gap-4 px-4 h-12 bg-card border-b border-border shrink-0">
+          <Link to="/" className="text-sm text-primary hover:text-primary/80">
             &larr; Launcher
           </Link>
-          <span className="map-topbar-title">
+          <span className="font-medium text-sm text-foreground">
             Architecture Map — {level === "L2" ? "Modules" : "Components"}
           </span>
-          <span className="map-topbar-stats">
+          <span className="text-xs text-muted-foreground ml-auto">
             {styledNodes.length} nodes / {styledEdges.length} edges
           </span>
+          <ThemeToggle />
         </div>
-        <div className="map-flow-wrapper">
+        <div className="flex-1 relative overflow-hidden">
           <ReactFlow
             nodes={styledNodes}
             edges={styledEdges}
@@ -597,28 +601,24 @@ function MapViewInner() {
             maxZoom={4}
             proOptions={{ hideAttribution: true }}
           >
-            <Controls
-              showInteractive={false}
-              className="map-controls"
-            />
+            <Controls showInteractive={false} />
             <MiniMap
               nodeColor={(n) => {
                 if (n.type === "group") return "transparent";
                 const data = n.data as { classification?: string };
-                if (data.classification === "shared-library") return "#bd93f9";
-                if (data.classification === "supporting-asset") return "#ffb300";
-                return "#00e5ff";
+                if (data.classification === "shared-library") return "hsl(280 45% 55%)";
+                if (data.classification === "supporting-asset") return "hsl(35 70% 50%)";
+                return "hsl(150 30% 50%)";
               }}
-              maskColor="rgba(10, 14, 20, 0.8)"
-              className="map-minimap"
+              maskColor="hsl(var(--background) / 0.8)"
             />
           </ReactFlow>
-          <button
-            className="map-create-btn"
+          <Button
+            className="absolute bottom-4 right-4 z-10"
             onClick={() => setShowCreateNode(true)}
           >
             + {level === "L2" ? "Module" : "Component"}
-          </button>
+          </Button>
           {showTickets && (
             <TicketPanel
               tickets={tickets}

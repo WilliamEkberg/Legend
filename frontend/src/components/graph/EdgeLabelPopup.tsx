@@ -3,6 +3,16 @@
 import { useState } from "react";
 import type { ViewLevel } from "../../data/types";
 import { MODULE_EDGE_TYPES, COMPONENT_EDGE_TYPES } from "../../data/types";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 interface EdgeLabelPopupProps {
   level: ViewLevel;
@@ -28,49 +38,52 @@ export function EdgeLabelPopup({
   };
 
   return (
-    <div className="map-modal-overlay" onClick={onClose}>
-      <div className="map-modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="map-modal-title">New Edge</h3>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>New Edge</DialogTitle>
+        </DialogHeader>
 
-        <p className="map-modal-info">
+        <p className="text-sm text-muted-foreground">
           {sourceName} &rarr; {targetName}
         </p>
 
-        <div className="map-modal-field">
-          <label className="map-modal-label">Edge Type</label>
-          <select
-            className="map-modal-select"
-            value={edgeType}
-            onChange={(e) => setEdgeType(e.target.value)}
-          >
-            {edgeTypes.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Edge Type</Label>
+            <select
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              value={edgeType}
+              onChange={(e) => setEdgeType(e.target.value)}
+            >
+              {edgeTypes.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Label (optional)</Label>
+            <Input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. REST API, shared config"
+              autoFocus
+            />
+          </div>
         </div>
 
-        <div className="map-modal-field">
-          <label className="map-modal-label">Label (optional)</label>
-          <input
-            className="map-modal-input"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="e.g. REST API, shared config"
-            autoFocus
-          />
-        </div>
-
-        <div className="map-modal-actions">
-          <button className="map-modal-cancel" onClick={onClose}>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
             Cancel
-          </button>
-          <button className="map-modal-save" onClick={handleSave}>
+          </Button>
+          <Button onClick={handleSave}>
             Create Edge
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

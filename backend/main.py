@@ -28,6 +28,15 @@ app = FastAPI()
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 DB_PATH = OUTPUT_DIR / "legend.db"
+
+
+@app.on_event("startup")
+def _ensure_db():
+    """Create the output directory and initialise the database if missing."""
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    conn = db.connect(str(DB_PATH))
+    db.init_schema(conn)
+    db.close(conn)
 SCIP_ENGINE_DIR = Path(__file__).resolve().parent / "scip-engine"
 
 
