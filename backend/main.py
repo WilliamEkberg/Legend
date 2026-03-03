@@ -1028,7 +1028,7 @@ async def generate_tickets(body: TicketGenerateRequest):
             )
         except (litellm.RateLimitError, litellm.APIError) as e:
             msg = str(e).lower()
-            credit_keywords = ["insufficient", "quota", "billing", "credits", "budget", "exceeded", "payment", "balance"]
+            credit_keywords = ["insufficient", "quota", "billing", "credits", "budget", "exceeded", "payment", "balance", "plan limit", "spending limit"]
             if any(kw in msg for kw in credit_keywords):
                 raise HTTPException(
                     status_code=402,
