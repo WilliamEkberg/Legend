@@ -119,6 +119,14 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
                 SCIP_LOCAL_IMAGE, "/workspace", "--output", "/output"], "Docker (scip-engine image)"
 
 
+SCIP_DOCKER_RETRY_DELAY = 2  # seconds
+
+
+def _is_docker_scip_cmd(cmd: list[str]) -> bool:
+    """Check if the SCIP command uses Docker (may need retry for mount issues)."""
+    return len(cmd) > 0 and cmd[0] == "docker"
+
+
 PROVIDER_ENV_MAP = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -1006,12 +1014,28 @@ async def generate_tickets(body: TicketGenerateRequest):
 
         prompt = _build_ticket_prompt(collapsed)
 
-        response = litellm.completion(
-            model=body.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
-            api_key=body.api_key,
-        )
+        try:
+            response = litellm.completion(
+                model=body.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=4096,
+                api_key=body.api_key,
+            )
+        except litellm.AuthenticationError:
+            raise HTTPException(
+                status_code=401,
+                detail="API authentication failed. Your API key may be invalid or expired.",
+            )
+        except (litellm.RateLimitError, litellm.APIError) as e:
+            msg = str(e).lower()
+            credit_keywords = ["insufficient", "quota", "billing", "credits", "budget", "exceeded", "payment", "balance"]
+            if any(kw in msg for kw in credit_keywords):
+                raise HTTPException(
+                    status_code=402,
+                    detail="You have run out of API credits. Please add credits to your account and try again.",
+                )
+            raise HTTPException(status_code=502, detail=f"LLM API error: {e}")
+
         raw_text = response.choices[0].message.content.strip()
 
         # Extract JSON array from response (handle markdown code fences)
@@ -1194,6 +1218,25 @@ async def run_stream(req: StreamRunRequest):
 
             if scip_proc is not None:
                 scip_rc = await scip_proc.wait()
+                if scip_rc != 0 and _is_docker_scip_cmd(scip_cmd):
+                    # Docker volume mount may have failed — retry
+                    for attempt in range(2, SCIP_DOCKER_MAX_RETRIES + 1):
+                        yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Docker mount may have failed (exit {scip_rc}). Retrying ({attempt}/{SCIP_DOCKER_MAX_RETRIES})...'})}\n\n"
+                        await asyncio.sleep(SCIP_DOCKER_RETRY_DELAY)
+                        retry_proc = await asyncio.create_subprocess_exec(
+                            *scip_cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.STDOUT,
+                            env={**os.environ},
+                        )
+                        async for line in retry_proc.stdout:
+                            text = line.decode("utf-8", errors="replace").rstrip("\n")
+                            if text:
+                                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+                        scip_rc = await retry_proc.wait()
+                        if scip_rc == 0:
+                            break
+
                 if scip_rc != 0:
                     yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Warning: indexer exited with code {scip_rc}. Part 2 will retry.'})}\n\n"
                 else:
@@ -1349,19 +1392,30 @@ async def run_stream(req: StreamRunRequest):
                     scip_cmd, scip_desc = _get_scip_cmd(source_dir)
                     yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Using {scip_desc}'})}\n\n"
 
-                    scip_proc = await asyncio.create_subprocess_exec(
-                        *scip_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT,
-                        env={**os.environ},
-                    )
+                    use_docker_retry = _is_docker_scip_cmd(scip_cmd)
+                    scip_rc = None
 
-                    async for line in scip_proc.stdout:
-                        text = line.decode("utf-8", errors="replace").rstrip("\n")
-                        if text:
-                            yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+                    for attempt in range(1, SCIP_DOCKER_MAX_RETRIES + 1 if use_docker_retry else 2):
+                        if attempt > 1:
+                            yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Docker mount may have failed. Retrying ({attempt}/{SCIP_DOCKER_MAX_RETRIES})...'})}\n\n"
+                            await asyncio.sleep(SCIP_DOCKER_RETRY_DELAY)
 
-                    scip_rc = await scip_proc.wait()
+                        scip_proc = await asyncio.create_subprocess_exec(
+                            *scip_cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.STDOUT,
+                            env={**os.environ},
+                        )
+
+                        async for line in scip_proc.stdout:
+                            text = line.decode("utf-8", errors="replace").rstrip("\n")
+                            if text:
+                                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+
+                        scip_rc = await scip_proc.wait()
+                        if scip_rc == 0:
+                            break
+
                     if scip_rc != 0:
                         yield f"data: {json.dumps({'type': 'error', 'text': f'[SCIP] Indexer failed with exit code {scip_rc}'})}\n\n"
                         yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
@@ -1420,11 +1474,19 @@ async def run_stream(req: StreamRunRequest):
 
                     yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Pipeline failed: {e}'})}\n\n"
+                    from component_discovery.llm_client import InsufficientCreditsError
+                    if isinstance(e, InsufficientCreditsError):
+                        yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Pipeline failed: {e}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Error: {e}'})}\n\n"
+                from component_discovery.llm_client import InsufficientCreditsError
+                if isinstance(e, InsufficientCreditsError):
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Error: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
         return StreamingResponse(part2_stream(), media_type="text/event-stream")
@@ -1456,7 +1518,11 @@ async def run_stream(req: StreamRunRequest):
                 yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 3] Pipeline failed: {e}'})}\n\n"
+                from map_descriptions.llm_client import InsufficientCreditsError
+                if isinstance(e, InsufficientCreditsError):
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 3] Pipeline failed: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
         return StreamingResponse(part3_stream(), media_type="text/event-stream")
@@ -1589,11 +1655,19 @@ async def run_stream(req: StreamRunRequest):
                     await task
                     yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Failed: {e}'})}\n\n"
+                    from component_discovery.llm_client import InsufficientCreditsError
+                    if isinstance(e, InsufficientCreditsError):
+                        yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Failed: {e}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Error: {e}'})}\n\n"
+                from component_discovery.llm_client import InsufficientCreditsError
+                if isinstance(e, InsufficientCreditsError):
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Error: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
         return StreamingResponse(edges_stream(), media_type="text/event-stream")
@@ -1625,7 +1699,11 @@ async def run_stream(req: StreamRunRequest):
                 yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'text': f'[Re-validate] Pipeline failed: {e}'})}\n\n"
+                from map_descriptions.llm_client import InsufficientCreditsError
+                if isinstance(e, InsufficientCreditsError):
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Re-validate] Pipeline failed: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
         return StreamingResponse(revalidation_stream(), media_type="text/event-stream")
@@ -1749,3 +1827,77 @@ async def get_validation_summary():
         return db.get_validation_summary(conn)
     finally:
         db.close(conn)
+
+
+# ---------------------------------------------------------------------------
+# Chat (MCP-based)
+# ---------------------------------------------------------------------------
+
+from chat import (
+    get_or_create_session,
+    delete_session,
+    run_chat_turn,
+    confirm_changes as do_confirm_changes,
+    shutdown_mcp,
+)
+
+
+class ChatRequest(BaseModel):
+    message: str
+    mode: str = "ask"  # "ask" | "edit"
+    session_id: str | None = None
+    api_key: str
+    provider: str = "anthropic"
+    model: str | None = None
+
+
+class ConfirmRequest(BaseModel):
+    session_id: str
+    change_ids: list[str]
+
+
+@app.post("/api/chat")
+async def chat_endpoint(req: ChatRequest):
+    """Stream a chat response as SSE events."""
+    session = get_or_create_session(req.session_id)
+
+    async def event_stream():
+        try:
+            async for event in run_chat_turn(
+                message=req.message,
+                mode=req.mode,
+                session=session,
+                db_path=str(DB_PATH),
+                api_key=req.api_key,
+                provider=req.provider,
+                model=req.model,
+            ):
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+        except Exception as e:
+            error_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
+            yield f"data: {json.dumps({'type': 'error', 'text': error_msg})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/chat/confirm")
+async def confirm_changes_endpoint(req: ConfirmRequest):
+    """Apply previously proposed changes."""
+    results = await do_confirm_changes(
+        session_id=req.session_id,
+        change_ids=req.change_ids,
+        db_path=str(DB_PATH),
+    )
+    return {"results": results}
+
+
+@app.delete("/api/chat/session/{session_id}")
+async def clear_chat_session(session_id: str):
+    """Clear conversation history for a session."""
+    deleted = delete_session(session_id)
+    return {"ok": deleted}
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await shutdown_mcp()

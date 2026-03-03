@@ -74,6 +74,7 @@ The pipeline has two manual review points:
 - [Description Generation (Part 3)](../map_descriptions/info_map_descriptions.md)
 - [Research Agent](../research_agent/info_research_agent.md)
 - [Ticket Generation](../ticket_generation/info_ticket_generation.md)
+- [Chat (MCP Architecture Assistant)](../chat/info_chat.md)
 - [Database](../database/info_database.md)
 - [Frontend](../Frontend/info_frontend.md)
 

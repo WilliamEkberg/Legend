@@ -3,7 +3,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { runOpenCodeStream, type StreamEvent } from "./api/client";
+import { runOpenCodeStream, isCreditError, type StreamEvent } from "./api/client";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -91,6 +91,7 @@ function App() {
   const [lines, setLines] = useState<OutputLine[]>([]);
   const [success, setSuccess] = useState<boolean | null>(null);
   const [error, setError] = useState("");
+  const [creditError, setCreditError] = useState("");
   const [pipelineStep, setPipelineStep] = useState(0);
   const [pipelineCompleted, setPipelineCompleted] = useState<number[]>([]);
   const outputRef = useRef<HTMLDivElement>(null);
@@ -124,6 +125,9 @@ function App() {
           if (event.type === "done") {
             stepSuccess = event.success ?? false;
           } else if (event.text) {
+            if (event.type === "error" && isCreditError(event.text)) {
+              setCreditError(event.text.replace(/^\[API Credits\]\s*/, ""));
+            }
             const lineType = event.type as OutputLine["type"];
             setLines((prev) => [...prev, { type: lineType, text: event.text! }]);
           }
@@ -149,6 +153,7 @@ function App() {
     setLines([]);
     setSuccess(null);
     setError("");
+    setCreditError("");
     setPipelineStep(0);
     setPipelineCompleted([]);
 
@@ -201,6 +206,9 @@ function App() {
             if (event.type === "done") {
               setSuccess(event.success ?? false);
             } else if (event.text) {
+              if (event.type === "error" && isCreditError(event.text)) {
+                setCreditError(event.text.replace(/^\[API Credits\]\s*/, ""));
+              }
               const lineType = event.type as OutputLine["type"];
               setLines((prev) => [...prev, { type: lineType, text: event.text! }]);
             }
@@ -381,6 +389,14 @@ function App() {
         {/* Inline error */}
         {error && lines.length === 0 && (
           <p className="text-sm text-destructive font-mono">{error}</p>
+        )}
+
+        {/* Credit / API key error banner */}
+        {creditError && (
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 space-y-1">
+            <p className="text-sm font-semibold text-destructive font-mono">API Credit Error</p>
+            <p className="text-sm text-destructive/90">{creditError}</p>
+          </div>
         )}
 
         {/* Pipeline progress */}

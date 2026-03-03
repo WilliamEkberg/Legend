@@ -262,3 +262,43 @@ export interface ValidationRun {
   } | null;
   created_at: string;
 }
+
+// ── Chat ──
+
+export type ChatMode = "ask" | "edit";
+
+export interface ProposedChange {
+  id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  description: string;
+  status: "pending" | "applied" | "rejected";
+}
+
+export interface ChatEvent {
+  type:
+    | "text"
+    | "tool_call"
+    | "tool_result"
+    | "proposed_change"
+    | "error"
+    | "done";
+  content?: string;
+  text?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+  result?: string;
+  change?: ProposedChange;
+  session_id?: string;
+  proposed_changes?: ProposedChange[];
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  toolCalls?: { name: string; arguments: Record<string, unknown> }[];
+  toolResults?: { name: string; result: string }[];
+  proposedChanges?: ProposedChange[];
+  timestamp: string;
+}

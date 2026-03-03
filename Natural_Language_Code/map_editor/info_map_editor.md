@@ -52,6 +52,7 @@ When adding or removing components, cascading effects apply:
 - Humans can edit the map at any time — no session locks or required sequences
 - Moving a decision between components is displayed as a move, not separate add/remove
 - `origin` is always `'human'` for all edits made through the UI
+- The [Chat](../chat/info_chat.md) feature also creates change records with `origin: 'chat'` — these are treated equally by ticket generation
 
 ---
 

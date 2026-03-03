@@ -15,6 +15,31 @@ DEFAULT_MODEL = "anthropic/claude-sonnet-4-20250514"
 MAX_RETRIES = 3
 RETRY_DELAY = 2.0
 
+_CREDIT_KEYWORDS = [
+    "insufficient",
+    "quota",
+    "billing",
+    "credits",
+    "budget",
+    "exceeded",
+    "payment",
+    "balance",
+    "plan limit",
+    "spending limit",
+]
+
+
+class InsufficientCreditsError(Exception):
+    """Raised when the API key has run out of credits or billing quota."""
+
+    pass
+
+
+def _is_credit_error(exc: Exception) -> bool:
+    """Check if an exception indicates exhausted API credits."""
+    msg = str(exc).lower()
+    return any(kw in msg for kw in _CREDIT_KEYWORDS)
+
 
 class LLMClient:
     """Provider-agnostic LLM client for structured JSON responses."""
@@ -58,13 +83,29 @@ class LLMClient:
                 text = response.choices[0].message.content
                 return self._parse_json_response(text)
 
-            except litellm.RateLimitError:
+            except litellm.AuthenticationError as e:
+                raise InsufficientCreditsError(
+                    "API authentication failed. Your API key may be invalid or expired. "
+                    "Please check your API key and try again."
+                ) from e
+
+            except litellm.RateLimitError as e:
+                if _is_credit_error(e):
+                    raise InsufficientCreditsError(
+                        "You have run out of API credits. "
+                        "Please add credits to your account and try again."
+                    ) from e
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(RETRY_DELAY * (attempt + 1))
                     continue
                 raise
 
-            except litellm.APIError:
+            except litellm.APIError as e:
+                if _is_credit_error(e):
+                    raise InsufficientCreditsError(
+                        "You have run out of API credits. "
+                        "Please add credits to your account and try again."
+                    ) from e
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(RETRY_DELAY)
                     continue

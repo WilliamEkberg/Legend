@@ -26,6 +26,7 @@ import {
   createComponentEdge,
   exportMapAsFile,
   createManualVersion,
+  CreditError,
 } from "../../api/client";
 import type {
   MapData,
@@ -55,6 +56,7 @@ import { VersionPanel } from "./VersionPanel";
 import { CreateNodeModal } from "./CreateNodeModal";
 import { EdgeLabelPopup } from "./EdgeLabelPopup";
 import { MapErrorBoundary } from "./MapErrorBoundary";
+import { ChatPanel } from "./ChatPanel";
 import { ThemeToggle } from "../ThemeToggle";
 import { Button } from "@/components/ui/button";
 
@@ -94,6 +96,7 @@ function MapViewInner() {
   const [showVersions, setShowVersions] = useState(false);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [loadingTickets, setLoadingTickets] = useState(false);
+  const [showChat, setShowChat] = useState(false);
 
   const { fitView } = useReactFlow();
   const fitViewRef = useRef(fitView);
@@ -161,7 +164,11 @@ function MapViewInner() {
       // Baseline advanced — refresh change records (should now be empty)
       refreshChangeRecords();
     } catch (e) {
-      alert(`Ticket generation failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof CreditError) {
+        alert(`API Credit Error: ${e.message}`);
+      } else {
+        alert(`Ticket generation failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
       setGenerating(false);
     }
@@ -581,6 +588,14 @@ function MapViewInner() {
           <span className="text-xs text-muted-foreground ml-auto">
             {styledNodes.length} nodes / {styledEdges.length} edges
           </span>
+          <Button
+            variant={showChat ? "default" : "outline"}
+            size="sm"
+            className="text-xs h-7"
+            onClick={() => setShowChat((v) => !v)}
+          >
+            Chat
+          </Button>
           <ThemeToggle />
         </div>
         <div className="flex-1 relative overflow-hidden">
@@ -646,6 +661,36 @@ function MapViewInner() {
           refreshChangeRecords();
         }}
       />
+      {showChat && (
+        <ChatPanel
+          onClose={() => setShowChat(false)}
+          onNodeSelect={(nodeType, id) => {
+            const nodeId = nodeType === "module"
+              ? (level === "L2" ? `module-${id}` : `group-module-${id}`)
+              : `component-${id}`;
+            const node = nodes.find((n) => n.id === nodeId);
+            if (node && mapData) {
+              if (nodeType === "module") {
+                const mod = mapData.modules.find((m) => m.id === id);
+                if (mod) setSelectedNode({ kind: "module", module: mod });
+              } else {
+                for (const mod of mapData.modules) {
+                  const comp = mod.components.find((c) => c.id === id);
+                  if (comp) {
+                    setSelectedNode({ kind: "component", component: comp, moduleName: mod.name });
+                    break;
+                  }
+                }
+              }
+              fitView({ nodes: [{ id: nodeId }], duration: 500, padding: 0.5 });
+            }
+          }}
+          onMapMutated={() => {
+            refreshMap();
+            refreshChangeRecords();
+          }}
+        />
+      )}
       {showCreateNode && mapData && (
         <CreateNodeModal
           level={level}

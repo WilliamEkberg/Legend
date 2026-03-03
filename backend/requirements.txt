@@ -10,6 +10,7 @@ networkx>=3.0
 igraph>=0.11
 leidenalg>=0.10
 litellm
+mcp>=1.0
 
 # Testing
 pytest

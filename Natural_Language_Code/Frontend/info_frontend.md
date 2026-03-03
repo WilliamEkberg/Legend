@@ -181,11 +181,12 @@ Map visualization:
 | `frontend/src/data/mapTransform.ts` | Transform `export_full_map` JSON → @xyflow nodes + edges (async, uses auto-layout for L2) |
 | `frontend/src/data/autoLayout.ts` | d3-force automatic graph layout: degree-based centering pulls connected nodes to center, isolated nodes get stronger pull to stay near cluster |
 | `frontend/src/data/types.ts` | TypeScript interfaces for map data, node data, edge data |
-| `frontend/src/api/client.ts` | `fetchMap()`, `exportMapAsFile()`, `importMap()`, `runOpenCode()`, `runOpenCodeStream()`, `updateDecision()`, `createDecision()`, `deleteDecision()`, `fetchChangeRecords()`, `generateTickets()`, `fetchTickets()`, `createModule()`, `createComponent()`, `createModuleEdge()`, `createComponentEdge()`, `fetchVersions()`, `fetchVersion()`, `createManualVersion()`, `compareVersions()`, `fetchValidationRuns()`, `fetchValidationRun()`, `fetchValidationSummary()` |
+| `frontend/src/api/client.ts` | `fetchMap()`, `exportMapAsFile()`, `importMap()`, `runOpenCode()`, `runOpenCodeStream()`, `updateDecision()`, `createDecision()`, `deleteDecision()`, `fetchChangeRecords()`, `generateTickets()`, `fetchTickets()`, `createModule()`, `createComponent()`, `createModuleEdge()`, `createComponentEdge()`, `fetchVersions()`, `fetchVersion()`, `createManualVersion()`, `compareVersions()`, `fetchValidationRuns()`, `fetchValidationRun()`, `fetchValidationSummary()`, `sendChatMessage()`, `confirmChatChanges()`, `clearChatSession()` |
 | `frontend/src/components/graph/TicketPanel.tsx` | Sliding panel: ticket list with copy-as-markdown per ticket, map correction count, triggered by "Generate Tickets" button |
 | `frontend/src/components/graph/CreateNodeModal.tsx` | Modal for creating new modules (L2) or components (L3) with form fields matching DB schema |
 | `frontend/src/components/graph/EdgeLabelPopup.tsx` | Modal triggered by handle drag (onConnect): edge type dropdown + optional label, then persists via API |
 | `frontend/src/components/graph/VersionPanel.tsx` | Bottom slide-up panel: version list with compare dropdown, version detail (decisions grouped by module), version comparison (added/removed/changed diff view) |
+| `frontend/src/components/graph/ChatPanel.tsx` | Right-side chat sidebar (420px): ask/edit mode toggle, streaming message display with markdown, tool call badges, proposed change cards with apply/reject, node reference links |
 
 ---
 
@@ -200,7 +201,7 @@ Map visualization:
 #### Dependencies
 
 - Core npm: `react` ^19.2, `react-dom` ^19.2, `vite` ^7.3, `typescript` ~5.9, `@tauri-apps/cli` ^2.10
-- Map npm: `@xyflow/react` (graph rendering), `framer-motion` (panel animations), `d3-force` ^3.0 (force-directed graph layout), `react-router-dom` ^7.13 (client-side routing)
+- Map npm: `@xyflow/react` (graph rendering), `framer-motion` (panel animations), `d3-force` ^3.0 (force-directed graph layout), `react-router-dom` ^7.13 (client-side routing), `react-markdown` (chat message rendering)
 - Styling npm: `tailwindcss` ^3.4, `tailwindcss-animate`, `autoprefixer`, `postcss`, `tailwind-merge`, `clsx`, `class-variance-authority`
 - UI npm: `lucide-react` (icons), `next-themes` (light/dark toggle), `sonner` (toast notifications), `@radix-ui/react-slot`, `@radix-ui/react-tabs`, `@radix-ui/react-scroll-area`, `@radix-ui/react-switch`, `@radix-ui/react-slider`, `@radix-ui/react-separator`, `@radix-ui/react-label`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-dialog`, `@radix-ui/react-tooltip`, `@radix-ui/react-select`
 - Cargo: `tauri` 2.10, `serde`/`serde_json`, `log`, `tauri-plugin-log`
@@ -424,6 +425,15 @@ Replaces single global d3-force simulation with per-module simulations for bette
 - [x] Update `MapSidebar` weight slider: dynamic max, adaptive step
 - [x] Pass `weightRange` from `MapView` to `MapSidebar`
 
+### MCP Chat Sidebar
+
+- [x] Install `react-markdown` dependency
+- [x] Add `ChatMessage`, `ChatMode`, `ProposedChange`, `ChatEvent` types to `types.ts`
+- [x] Add `sendChatMessage()`, `confirmChatChanges()`, `clearChatSession()` to `client.ts`
+- [x] Build `ChatPanel.tsx` — 420px right sidebar with ask/edit mode toggle, streaming messages, markdown rendering, tool call badges, proposed change cards with apply/reject
+- [x] Add Chat toggle button to MapView header bar
+- [x] Integrate ChatPanel into MapView with node navigation (clickable node references → fitView + select) and map refresh on confirmed edits
+
 ---
 
 ## Log
@@ -451,3 +461,4 @@ Replaces single global d3-force simulation with per-module simulations for bette
 - 2026-02-20 :: william :: Replaced per-module d3-force layout with hierarchical layered layout for L3 view. layoutModule() now uses degree-based BFS layering: highest-degree component at top (layer 0), neighbors at layer 1, etc. Barycenter heuristic orders nodes within layers to minimize edge crossings (two passes: top-down + bottom-up). Disconnected components placed in grid below hierarchy. Multiple connected subgraphs laid out side-by-side. Module group positioning (Phase 2) still uses d3-force. Also: dynamic weight slider (max computed from actual edge data via getWeightRange()), MapSidebar shows "min / max" values. Files: mapTransform.ts (layoutModule rewrite, getWeightRange), MapSidebar.tsx (weightRange prop), MapView.tsx (weightRange memo + prop pass).
 - 2026-02-20 :: william :: Performance fixes + Tauri download fix. (1) Reduced box-shadow blur from 200px/80px to 15px/6px on .has-changes and .has-revalidation nodes in graph.css — WKWebView was GPU-thrashing on large blurs. (2) Stopped infinite CSS handle-pulse animation on all 8 handles per node (moved to :hover only). (3) Added React.memo() to MapNode, AnimatedEdge, GroupNode to prevent unnecessary re-renders. (4) Fixed Tauri file download: blob URL downloads don't work in WKWebView, replaced with Tauri dialog+fs plugins (save dialog + writeTextFile) for both ticket download and map export. Added tauri-plugin-dialog and tauri-plugin-fs to Cargo.toml, lib.rs, capabilities. (5) Reduced d3-force ticks: autoLayout 400→200, mapTransform 300→150. (6) Raised ReactFlow minZoom from 0.001 to 0.1. (7) Tuned framer-motion springs: damping 25-28→40, stiffness 300→200 for faster settling in DetailPanel, TicketPanel, VersionPanel.
 - 2026-02-28 :: william :: Frontend theme overhaul: migrated from plain CSS to Tailwind CSS + shadcn/ui. Adopted Context viewer design system with dual light/dark themes (warm cream/forest green light, deep forest/bright green dark). Added next-themes toggle, sonner toasts, lucide-react icons. Replaced App.css and graph.css (~1800 lines) with Tailwind utility classes across all 11 graph components + launcher. New files: tailwind.config.ts, postcss.config.js, components.json, lib/utils.ts, ThemeToggle.tsx, 16 shadcn/ui components. Fonts: Inter (UI), Lora (headings), Space Mono (code). All component logic unchanged.
+- 2026-03-02 :: william :: Added MCP chat sidebar to map view. New ChatPanel.tsx: 420px right sidebar with ask/edit mode toggle, streaming SSE messages with react-markdown rendering, tool call badges, ProposedChange cards (apply/reject per-change + apply/reject all), node reference links (clickable → fitView + select node on map). Types: ChatMessage, ChatMode, ProposedChange, ChatEvent. API: sendChatMessage() (SSE streaming), confirmChatChanges(), clearChatSession(). MapView: Chat toggle button in header, ChatPanel rendering with onNodeSelect (navigates to node) and onMapMutated (refreshes map + change records). Dependency: react-markdown.
