@@ -5,11 +5,19 @@ import asyncio
 import json
 import os
 import queue as _queue
+import shutil
 import subprocess
+import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import sqlite3
+
+# Fix Windows asyncio subprocess issue with uvicorn --reload
+# Without this, asyncio.create_subprocess_exec raises NotImplementedError
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -130,6 +138,7 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
 
 SCIP_DOCKER_MAX_RETRIES = 3
 SCIP_DOCKER_RETRY_DELAY = 2  # seconds
+SCIP_DOCKER_MAX_RETRIES = 3  # max attempts for Docker mount issues
 
 
 def _is_docker_scip_cmd(cmd: list[str]) -> bool:
@@ -143,6 +152,19 @@ PROVIDER_ENV_MAP = {
     "google": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
 }
+
+
+def _get_opencode_executable() -> str:
+    """Get the full path to the opencode executable.
+
+    On Windows, npm-installed global packages create .cmd files that need
+    to be explicitly specified for asyncio.create_subprocess_exec.
+    """
+    opencode_path = shutil.which("opencode")
+    if opencode_path:
+        return opencode_path
+    # Fallback - let subprocess try to find it
+    return "opencode"
 
 
 def build_prompt(provider: str, model: str, repo_path: str | None = None) -> str:
@@ -412,11 +434,12 @@ async def run_opencode(req: RunRequest):
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    cmd = ["opencode", "run", "--agent", "build", "-m", model, prompt]
+    cmd = [_get_opencode_executable(), "run", "--agent", "build", "-m", model]
 
     try:
         result = subprocess.run(
             cmd,
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=120,
@@ -1167,16 +1190,26 @@ async def run_stream(req: StreamRunRequest):
                 project_dir=source_dir,
                 output_dir=str(OUTPUT_DIR),
             )
-            opencode_cmd = ["opencode", "run", "--agent", "build", "-m", model, modules_prompt]
+
+            # Use shell=True on Windows to handle long prompts via stdin piping
+            # This avoids Windows command line length limits
+            opencode_exe = _get_opencode_executable()
+            opencode_cmd = [opencode_exe, "run", "--agent", "build", "-m", model]
 
             try:
                 opencode_proc = await asyncio.create_subprocess_exec(
                     *opencode_cmd,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(OUTPUT_DIR),
                     env=env,
                 )
+                # Write prompt to stdin and close it
+                opencode_proc.stdin.write(modules_prompt.encode("utf-8"))
+                await opencode_proc.stdin.drain()
+                opencode_proc.stdin.close()
+                await opencode_proc.stdin.wait_closed()
             except FileNotFoundError:
                 yield f"data: {json.dumps({'type': 'error', 'text': 'opencode CLI not found. Install with: npm i -g opencode-ai@latest'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
@@ -1303,16 +1336,23 @@ async def run_stream(req: StreamRunRequest):
             edges_prompt = edges_system_prompt() + "\n\n---\n\n" + edges_variables_prompt(
                 output_dir=str(OUTPUT_DIR),
             )
-            edges_cmd = ["opencode", "run", "--agent", "build", "-m", model, edges_prompt]
+
+            edges_cmd = [_get_opencode_executable(), "run", "--agent", "build", "-m", model]
 
             try:
                 edges_proc = await asyncio.create_subprocess_exec(
                     *edges_cmd,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(OUTPUT_DIR),
                     env=env,
                 )
+                # Write prompt to stdin and close it
+                edges_proc.stdin.write(edges_prompt.encode("utf-8"))
+                await edges_proc.stdin.drain()
+                edges_proc.stdin.close()
+                await edges_proc.stdin.wait_closed()
             except FileNotFoundError:
                 yield f"data: {json.dumps({'type': 'error', 'text': 'opencode CLI not found.'})}\n\n"
                 db.complete_pipeline_run(conn, run_id, "failed")

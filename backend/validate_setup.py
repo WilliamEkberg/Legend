@@ -13,7 +13,12 @@ Exit codes:
     1 - One or more checks failed
 """
 
+import os
 import sys
+
+# Enable ANSI colors on Windows 10+
+if sys.platform == "win32":
+    os.system("")  # Enables ANSI escape sequence processing
 
 # Colors for terminal output
 GREEN = "\033[92m"
