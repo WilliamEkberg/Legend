@@ -128,6 +128,7 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
                 SCIP_LOCAL_IMAGE, "/workspace", "--output", "/output"], "Docker (scip-engine image)"
 
 
+SCIP_DOCKER_MAX_RETRIES = 3
 SCIP_DOCKER_RETRY_DELAY = 2  # seconds
 
 
