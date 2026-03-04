@@ -156,7 +156,7 @@ CREATE TABLE change_records (
     action          TEXT NOT NULL,        -- 'add', 'edit', 'remove'
     old_value       TEXT,                -- JSON: previous state (NULL for 'add')
     new_value       TEXT,                -- JSON: new state (NULL for 'remove')
-    origin          TEXT NOT NULL,        -- 'human' or 'ai'
+    origin          TEXT NOT NULL,        -- 'human', 'chat', or 'ai'
     baseline_id     INTEGER REFERENCES baselines(id),
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );

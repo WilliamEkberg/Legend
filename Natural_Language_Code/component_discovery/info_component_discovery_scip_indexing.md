@@ -52,6 +52,7 @@ The key data the pipeline extracts:
 - Multi-language repositories need separate indexer runs; their `.scip` outputs would need to be merged or processed independently
 - The SCIP protobuf schema is defined in `scip.proto` — Python bindings are generated via `protoc` into `scip_pb2.py`
 - Indexer errors (missing dependencies, syntax errors in source) produce partial outputs — the pipeline handles this gracefully by working with whatever symbols were successfully indexed
+- **Docker volume mount failure detection**: On macOS, Docker Desktop's VirtioFS can intermittently fail to populate volume mounts, causing the indexer to see 0 files. The indexer exits with code 1 when `total_files == 0` (instead of silently succeeding), signaling to the backend that a retry is needed. The backend retries Docker SCIP invocations up to 3 times with a 2-second delay between attempts.
 
 ---
 
@@ -157,6 +158,7 @@ Rebuild the base image only when adding/updating a language runtime or SCIP inde
 | scip-python via npm, not pip | scip-python is `@sourcegraph/scip-python` npm package (built on Pyright). The Rust orchestrator tries bundled → binary → npx fallback |
 | tsconfig paths are positional args | `scip-typescript index [options] [projects...]` — projects go after flags, no `--project` prefix |
 | Pre-built base image for Docker | All language runtimes + SCIP indexers in `Dockerfile.base`, built once. Main Dockerfile only compiles Rust (~seconds vs ~10 min). Rebuild base only when updating runtimes. |
+| Exit code 1 on empty mount | When `total_files == 0`, the indexer exits with code 1 instead of silently succeeding. This catches Docker VirtioFS mount failures on macOS and triggers the backend's retry logic. |
 
 ---
 
@@ -173,3 +175,4 @@ Rebuild the base image only when adding/updating a language runtime or SCIP inde
 - 2026-02-17 :: william :: Added Section 2: tsconfig discovery logic, npm install requirement, key technical decisions. Fix for scip-typescript producing local symbols when path aliases aren't resolved
 - 2026-02-17 :: william :: Fixed scip-python install command (was pip, actually npm). Added run_python_indexer with npx fallback. Added install-indexers.sh setup script. Fixed tsconfig args (positional, not --project flag)
 - 2026-02-19 :: william :: Split Docker into base image + app image. Created Dockerfile.base with all runtimes pre-installed, build-base.sh to build it, simplified main Dockerfile to only compile Rust and copy binary into base. Eliminates ~10 min of downloads on every rebuild.
+- 2026-03-02 :: william :: Added Docker mount failure detection: indexer now exits with code 1 when `total_files == 0` (empty volume mount). Fixes intermittent macOS Docker Desktop VirtioFS race condition where mounts are empty at container start.

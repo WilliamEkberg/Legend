@@ -1,48 +1,302 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap");
 
-:root {
-  --bg: #0a0e14;
-  --surface: #0d1117;
-  --border: #1e2a3a;
-  --text: #c5cdd8;
-  --text-dim: #4a5568;
-  --cyan: #00e5ff;
-  --green: #00ff9d;
-  --red: #ff3d5a;
-  --amber: #ffb300;
-  --purple: #bd93f9;
-  --glow-cyan: 0 0 10px rgba(0, 229, 255, 0.3);
-  --glow-green: 0 0 10px rgba(0, 255, 157, 0.3);
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', monospace;
-  line-height: 1.6;
-  font-weight: 400;
-  color: var(--text);
-  background-color: var(--bg);
+/* Legend Design System — dual theme (light + dark) */
 
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@layer base {
+  :root {
+    /* Core backgrounds — warm cream */
+    --background: 40 33% 96%;
+    --foreground: 150 25% 20%;
+
+    /* Card surfaces */
+    --card: 40 30% 98%;
+    --card-foreground: 150 25% 20%;
+
+    /* Popover */
+    --popover: 40 30% 98%;
+    --popover-foreground: 150 25% 20%;
+
+    /* Primary — Forest Green */
+    --primary: 150 25% 28%;
+    --primary-foreground: 40 30% 98%;
+
+    /* Secondary — Light warm surface */
+    --secondary: 40 20% 94%;
+    --secondary-foreground: 150 25% 28%;
+
+    /* Muted — Subtle backgrounds */
+    --muted: 40 15% 92%;
+    --muted-foreground: 150 10% 45%;
+
+    /* Accent */
+    --accent: 150 25% 28%;
+    --accent-foreground: 40 30% 98%;
+
+    /* Destructive */
+    --destructive: 0 65% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Borders and inputs */
+    --border: 40 15% 88%;
+    --input: 40 15% 88%;
+    --ring: 150 25% 40%;
+
+    --radius: 0.375rem;
+
+    /* Graph Node Type Colors */
+    --node-component: 150 40% 35%;
+    --node-api: 180 50% 35%;
+    --node-utility: 35 70% 50%;
+    --node-data: 200 60% 45%;
+    --node-config: 150 10% 50%;
+    --node-problem: 0 65% 55%;
+    --node-rust: 15 70% 50%;
+    --node-actor: 280 45% 55%;
+    --node-external: 220 50% 50%;
+
+    /* Edge animation colors */
+    --edge-default: 150 10% 70%;
+    --edge-highlight: 150 40% 35%;
+
+    /* Sidebar */
+    --sidebar-background: 40 25% 97%;
+    --sidebar-foreground: 150 25% 20%;
+    --sidebar-primary: 150 25% 28%;
+    --sidebar-primary-foreground: 40 30% 98%;
+    --sidebar-accent: 40 20% 94%;
+    --sidebar-accent-foreground: 150 25% 28%;
+    --sidebar-border: 40 15% 88%;
+    --sidebar-ring: 150 25% 40%;
+
+    /* Shadows */
+    --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+    --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+    --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.1), 0 1px 2px -1px hsl(0 0% 0% / 0.1);
+    --shadow: 0 1px 3px 0px hsl(0 0% 0% / 0.1), 0 1px 2px -1px hsl(0 0% 0% / 0.1);
+    --shadow-md: 0 1px 3px 0px hsl(0 0% 0% / 0.1), 0 2px 4px -1px hsl(0 0% 0% / 0.1);
+    --shadow-lg: 0 1px 3px 0px hsl(0 0% 0% / 0.1), 0 4px 6px -1px hsl(0 0% 0% / 0.1);
+    --shadow-xl: 0 1px 3px 0px hsl(0 0% 0% / 0.1), 0 8px 10px -1px hsl(0 0% 0% / 0.1);
+    --shadow-2xl: 0 1px 3px 0px hsl(0 0% 0% / 0.25);
+  }
+
+  .dark {
+    --background: 150 20% 10%;
+    --foreground: 40 30% 95%;
+
+    --card: 150 20% 14%;
+    --card-foreground: 40 30% 95%;
+
+    --popover: 150 20% 14%;
+    --popover-foreground: 40 30% 95%;
+
+    --primary: 150 30% 50%;
+    --primary-foreground: 150 25% 10%;
+
+    --secondary: 150 15% 20%;
+    --secondary-foreground: 40 30% 95%;
+
+    --muted: 150 15% 20%;
+    --muted-foreground: 150 10% 60%;
+
+    --accent: 150 30% 50%;
+    --accent-foreground: 150 25% 10%;
+
+    --destructive: 0 60% 55%;
+    --destructive-foreground: 40 30% 95%;
+
+    --border: 150 10% 25%;
+    --input: 150 10% 25%;
+    --ring: 150 30% 45%;
+
+    --node-rust: 15 65% 55%;
+    --node-actor: 280 40% 60%;
+    --node-external: 220 45% 55%;
+
+    --sidebar-background: 150 20% 12%;
+    --sidebar-foreground: 40 30% 95%;
+    --sidebar-primary: 150 30% 50%;
+    --sidebar-primary-foreground: 150 25% 10%;
+    --sidebar-accent: 150 15% 20%;
+    --sidebar-accent-foreground: 40 30% 95%;
+    --sidebar-border: 150 10% 25%;
+    --sidebar-ring: 150 30% 45%;
+
+    --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.15);
+    --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.15);
+    --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.2), 0 1px 2px -1px hsl(0 0% 0% / 0.2);
+    --shadow: 0 1px 3px 0px hsl(0 0% 0% / 0.2), 0 1px 2px -1px hsl(0 0% 0% / 0.2);
+    --shadow-md: 0 1px 3px 0px hsl(0 0% 0% / 0.2), 0 2px 4px -1px hsl(0 0% 0% / 0.2);
+    --shadow-lg: 0 1px 3px 0px hsl(0 0% 0% / 0.2), 0 4px 6px -1px hsl(0 0% 0% / 0.2);
+    --shadow-xl: 0 1px 3px 0px hsl(0 0% 0% / 0.2), 0 8px 10px -1px hsl(0 0% 0% / 0.2);
+    --shadow-2xl: 0 1px 3px 0px hsl(0 0% 0% / 0.35);
+  }
 }
 
-* {
-  box-sizing: border-box;
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    margin: 0;
+    min-height: 100vh;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.25);
+    color: hsl(var(--primary-foreground));
+  }
 }
 
-body {
-  margin: 0;
-  height: 100vh;
+@layer utilities {
+  /* Legend shadow utilities */
+  .legend-shadow {
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.05), 0 1px 2px -1px rgb(0 0 0 / 0.05);
+  }
+
+  .legend-shadow-md {
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+  }
+
+  .legend-shadow-lg {
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.05);
+  }
+
+  .legend-shadow-hover {
+    box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.08);
+  }
+
+  /* Gradient backgrounds */
+  .gradient-radial {
+    background: radial-gradient(circle at 50% 50%, var(--tw-gradient-from), var(--tw-gradient-to));
+  }
+
+  /* Animated edge dots */
+  @keyframes flow {
+    0% { stroke-dashoffset: 24; }
+    100% { stroke-dashoffset: 0; }
+  }
+
+  .edge-animated {
+    animation: flow 1s linear infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+
+  .pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes fade-in-up {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-fade-in-up {
+    animation: fade-in-up 0.6s ease-out forwards;
+  }
+
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.9);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .animate-scale-in {
+    animation: scale-in 0.4s ease-out forwards;
+  }
+
+  @keyframes slide-in-right {
+    from {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .animate-slide-in-right {
+    animation: slide-in-right 0.3s ease-out forwards;
+  }
+}
+
+/* React Flow customizations */
+.react-flow__node {
+  cursor: pointer;
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+.react-flow__minimap {
+  border-radius: 8px;
   overflow: hidden;
-  background: var(--bg);
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.07);
 }
 
-#root {
-  height: 100%;
+.react-flow__controls {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.07);
 }
 
+.react-flow__controls-button {
+  border: none !important;
+  background: hsl(var(--background)) !important;
+}
 
-::selection {
-  background: rgba(0, 229, 255, 0.25);
-  color: #fff;
+.react-flow__controls-button:hover {
+  background: hsl(var(--secondary)) !important;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--secondary));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.5);
 }

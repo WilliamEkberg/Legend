@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { Button } from "@/components/ui/button";
 
 interface Props {
   children: ReactNode;
@@ -31,16 +32,16 @@ export class MapErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="map-container">
-          <div className="map-empty">
-            <p className="map-error">Something went wrong rendering the map.</p>
-            <p className="map-empty-hint">
+        <div className="flex w-screen h-screen bg-background overflow-hidden">
+          <div className="flex flex-col items-center justify-center h-full w-full gap-4 text-muted-foreground">
+            <p className="text-destructive font-medium">Something went wrong rendering the map.</p>
+            <p className="text-sm">
               {this.state.error?.message ?? "An unexpected error occurred."}
             </p>
-            <button className="sidebar-btn" onClick={this.handleReset}>
+            <Button variant="outline" onClick={this.handleReset}>
               Reload Map
-            </button>
-            <Link to="/" className="map-back-link" style={{ marginTop: 12 }}>
+            </Button>
+            <Link to="/" className="text-sm text-primary hover:text-primary/80 mt-2">
               &larr; Back to launcher
             </Link>
           </div>

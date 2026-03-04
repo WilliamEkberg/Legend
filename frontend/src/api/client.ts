@@ -16,6 +16,8 @@ import type {
   ValidationSummary,
   ValidationRun,
   DecisionValidation,
+  ChatEvent,
+  ChatMode,
 } from "../data/types";
 
 export interface RunRequest {
@@ -28,6 +30,33 @@ export interface RunResponse {
   success: boolean;
   output: string;
   error: string;
+}
+
+const CREDIT_KEYWORDS = [
+  "insufficient",
+  "quota",
+  "billing",
+  "credits",
+  "budget",
+  "exceeded",
+  "payment",
+  "balance",
+  "api credits",
+  "authentication failed",
+  "invalid api key",
+  "expired",
+];
+
+export function isCreditError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return CREDIT_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+export class CreditError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CreditError";
+  }
 }
 
 export async function runOpenCode(req: RunRequest): Promise<RunResponse> {
@@ -91,7 +120,16 @@ export async function generateTickets(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: apiKey, model }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 402) {
+      const detail = await res.json().catch(() => null);
+      throw new CreditError(
+        detail?.detail ??
+          "API credit issue. Your API key may be invalid or out of credits.",
+      );
+    }
+    throw new Error(`HTTP ${res.status}`);
+  }
   return res.json();
 }
 
@@ -336,4 +374,80 @@ export async function fetchValidationSummary(): Promise<ValidationSummary> {
   const res = await fetch("/api/validation/summary");
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+// ── Chat ──
+
+export interface ChatRequest {
+  message: string;
+  mode: ChatMode;
+  session_id?: string;
+  api_key: string;
+  provider: string;
+  model?: string;
+}
+
+export async function sendChatMessage(
+  req: ChatRequest,
+  onEvent: (event: ChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+    signal,
+  });
+
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          const event: ChatEvent = JSON.parse(line.slice(6));
+          onEvent(event);
+        } catch {
+          // skip malformed SSE lines
+        }
+      }
+    }
+  }
+}
+
+export async function confirmChatChanges(body: {
+  session_id: string;
+  change_ids: string[];
+}): Promise<{
+  results: Array<{
+    change_id: string;
+    success: boolean;
+    result?: Record<string, unknown>;
+    error?: string;
+  }>;
+}> {
+  const res = await fetch("/api/chat/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function clearChatSession(sessionId: string): Promise<void> {
+  await fetch(`/api/chat/session/${sessionId}`, { method: "DELETE" });
 }

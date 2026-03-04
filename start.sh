@@ -42,11 +42,12 @@ if [ "$NODE_MAJOR" -lt 18 ]; then
 fi
 echo "Using Node.js $(node -v)"
 
-# Check opencode CLI (needed for L2 classification pipeline)
+# Install opencode CLI if not present (needed for L2 classification pipeline)
 if ! command -v opencode &>/dev/null; then
-    echo "Warning: opencode CLI not found. The L2 classification pipeline will not work."
-    echo "  Install: npm i -g opencode-ai@latest"
+    echo "Installing opencode CLI..."
+    npm i -g opencode-ai@latest
 fi
+echo "Using opencode $(opencode --version 2>/dev/null || echo '(version unknown)')"
 
 # Check Rust/Cargo is installed (needed for Tauri)
 if ! command -v cargo &>/dev/null; then
@@ -129,11 +130,7 @@ else
     exit 1
 fi
 echo "Installing backend dependencies..."
-# Parse packages from environment.yml (lines starting with "  - ")
-TEMP_REQS=$(mktemp)
-grep '^  - ' "$ROOT_DIR/environment.yml" | sed 's/^  - //' > "$TEMP_REQS"
-pip install -q -r "$TEMP_REQS"
-rm -f "$TEMP_REQS"
+pip install -q -r "$ROOT_DIR/backend/requirements.txt"
 
 # Set up pre-commit hooks if not already installed
 #if [ -f "$ROOT_DIR/.pre-commit-config.yaml" ] && [ ! -f "$ROOT_DIR/.git/hooks/pre-commit" ]; then

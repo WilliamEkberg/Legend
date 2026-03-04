@@ -115,6 +115,11 @@ fn analyze_codebase(config: Config, output_dir: Option<PathBuf>) -> Result<()> {
     // Print coverage summary before running indexers
     print_coverage_summary(&report);
 
+    if report.total_files == 0 {
+        eprintln!("ERROR: No files found in {:?}. If running in Docker, the volume mount may have failed.", config.input_path);
+        std::process::exit(1);
+    }
+
     if report.languages.is_empty() {
         eprintln!("No supported programming languages detected in {:?}", config.input_path);
         return Ok(());

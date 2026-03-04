@@ -3,8 +3,10 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { runOpenCodeStream, type StreamEvent } from "./api/client";
-import "./App.css";
+import { runOpenCodeStream, isCreditError, type StreamEvent } from "./api/client";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 const ASCII_LOGO = `
  ██▓    ▓█████   ▄████ ▓█████  ███▄    █ ▓█████▄
@@ -89,8 +91,9 @@ function App() {
   const [lines, setLines] = useState<OutputLine[]>([]);
   const [success, setSuccess] = useState<boolean | null>(null);
   const [error, setError] = useState("");
-  const [pipelineStep, setPipelineStep] = useState(0); // 0=idle, 1-3=current step
-  const [pipelineCompleted, setPipelineCompleted] = useState<number[]>([]); // completed step indices
+  const [creditError, setCreditError] = useState("");
+  const [pipelineStep, setPipelineStep] = useState(0);
+  const [pipelineCompleted, setPipelineCompleted] = useState<number[]>([]);
   const outputRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -98,7 +101,6 @@ function App() {
     try { localStorage.setItem(key, value); } catch { /* ignore */ }
   }
 
-  // Auto-scroll output to bottom
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
@@ -123,6 +125,9 @@ function App() {
           if (event.type === "done") {
             stepSuccess = event.success ?? false;
           } else if (event.text) {
+            if (event.type === "error" && isCreditError(event.text)) {
+              setCreditError(event.text.replace(/^\[API Credits\]\s*/, ""));
+            }
             const lineType = event.type as OutputLine["type"];
             setLines((prev) => [...prev, { type: lineType, text: event.text! }]);
           }
@@ -148,6 +153,7 @@ function App() {
     setLines([]);
     setSuccess(null);
     setError("");
+    setCreditError("");
     setPipelineStep(0);
     setPipelineCompleted([]);
 
@@ -156,14 +162,12 @@ function App() {
 
     try {
       if (step === "full") {
-        // Run all 3 steps sequentially
         for (let i = 0; i < PIPELINE_STEPS.length; i++) {
           if (controller.signal.aborted) break;
 
           const { step: stepName, label } = PIPELINE_STEPS[i];
           setPipelineStep(i + 1);
 
-          // Add separator between steps
           if (i > 0) {
             setLines((prev) => [
               ...prev,
@@ -190,7 +194,6 @@ function App() {
         setSuccess(true);
         setPipelineStep(0);
       } else {
-        // Single step (existing behavior)
         await runOpenCodeStream(
           {
             api_key: apiKey,
@@ -203,6 +206,9 @@ function App() {
             if (event.type === "done") {
               setSuccess(event.success ?? false);
             } else if (event.text) {
+              if (event.type === "error" && isCreditError(event.text)) {
+                setCreditError(event.text.replace(/^\[API Credits\]\s*/, ""));
+              }
               const lineType = event.type as OutputLine["type"];
               setLines((prev) => [...prev, { type: lineType, text: event.text! }]);
             }
@@ -226,114 +232,144 @@ function App() {
   }
 
   return (
-    <div className="terminal">
-      <div className="terminal-body">
-        <div className="logo">
-          <pre>{ASCII_LOGO}</pre>
+    <div className="min-h-screen bg-background overflow-y-auto">
+      <div className="w-full max-w-2xl mx-auto space-y-6 p-4 py-8">
+        {/* Theme toggle */}
+        <div className="flex justify-end">
+          <ThemeToggle />
         </div>
-        <div className="version">v1.0.0 :: unrestricted mode</div>
 
-        <div className="steps-box">
-          <p className="steps-intro">
+        {/* ASCII Logo */}
+        <div className="text-center">
+          <pre className="inline-block text-primary text-xs leading-tight font-mono select-none">{ASCII_LOGO}</pre>
+        </div>
+        <p className="text-center text-muted-foreground text-xs font-mono tracking-widest">
+          v1.0.0 :: unrestricted mode
+        </p>
+
+        {/* How it works */}
+        <div className="bg-card border border-border rounded-lg p-4 space-y-3">
+          <p className="text-sm text-muted-foreground leading-relaxed">
             Legend is a workspace for spec-driven development. It uses AI to analyze your codebase and generate an interactive architecture map with editable decisions and exportable tickets. When your code evolves, re-validate to ingest code changes and check which decisions still hold — without rebuilding the map from scratch.
           </p>
-          <div className="steps-list">
-            <div className="step"><span className="step-num">1</span> Set API key &amp; repo path</div>
-            <div className="step"><span className="step-num">2</span> Run Parts 1–3 to build the map</div>
-            <div className="step"><span className="step-num">3</span> View, edit &amp; generate tickets</div>
-            <div className="step"><span className="step-num">4</span> (optional) Re-validate to ingest new code changes</div>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs font-bold shrink-0">1</span>
+              <span className="text-foreground">Set API key &amp; repo path</span>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs font-bold shrink-0">2</span>
+              <span className="text-foreground">Run Parts 1–3 to build the map</span>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary text-primary-foreground text-xs font-bold shrink-0">3</span>
+              <span className="text-foreground">View, edit &amp; generate tickets</span>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-muted text-muted-foreground text-xs font-bold shrink-0">4</span>
+              <span className="text-muted-foreground">(optional) Re-validate to ingest new code changes</span>
+            </div>
           </div>
-          <div className="steps-warning">
+          <p className="text-xs text-destructive/80 bg-destructive/10 rounded px-2 py-1.5">
             Re-running Parts 1–3 resets the map. Use Re-validate instead to ingest changes and update decisions without losing your edits.
+          </p>
+        </div>
+
+        {/* Form fields */}
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground font-mono">
+              <span className="text-primary font-bold">&gt;</span> api_key
+            </label>
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(e) => { setApiKey(e.target.value); persist("legend:apiKey", e.target.value); }}
+              placeholder="sk-..."
+              spellCheck={false}
+              className="font-mono"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground font-mono">
+              <span className="text-primary font-bold">&gt;</span> repo_path
+            </label>
+            <Input
+              type="text"
+              value={repoPath}
+              onChange={(e) => { setRepoPath(e.target.value); persist("legend:repoPath", e.target.value); }}
+              placeholder="/path/to/repository"
+              spellCheck={false}
+              className="font-mono"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground font-mono">
+              <span className="text-primary font-bold">&gt;</span> provider
+            </label>
+            <select
+              value={provider}
+              onChange={(e) => {
+                const v = e.target.value;
+                setProvider(v);
+                persist("legend:provider", v);
+                const def = PROVIDER_MODELS[v]?.[0]?.value ?? "";
+                setModel(def);
+                persist("legend:model", def);
+              }}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              {PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground font-mono">
+              <span className="text-primary font-bold">&gt;</span> model
+            </label>
+            <select
+              value={model}
+              onChange={(e) => { setModel(e.target.value); persist("legend:model", e.target.value); }}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              {(PROVIDER_MODELS[provider] ?? []).map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground font-mono">
+              <span className="text-primary font-bold">&gt;</span> pipeline step
+            </label>
+            <select
+              value={step}
+              onChange={(e) => { setStep(e.target.value); persist("legend:step", e.target.value); }}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              {STEPS.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
-        <div className="field">
-          <div className="field-label">
-            <span className="prompt">&gt;</span> api_key
-          </div>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => { setApiKey(e.target.value); persist("legend:apiKey", e.target.value); }}
-            placeholder="sk-..."
-            spellCheck={false}
-          />
-        </div>
-
-        <div className="field">
-          <div className="field-label">
-            <span className="prompt">&gt;</span> repo_path
-          </div>
-          <input
-            type="text"
-            value={repoPath}
-            onChange={(e) => { setRepoPath(e.target.value); persist("legend:repoPath", e.target.value); }}
-            placeholder="/path/to/repository"
-            spellCheck={false}
-          />
-        </div>
-
-        <div className="field">
-          <div className="field-label">
-            <span className="prompt">&gt;</span> provider
-          </div>
-          <select
-            value={provider}
-            onChange={(e) => {
-              const v = e.target.value;
-              setProvider(v);
-              persist("legend:provider", v);
-              const def = PROVIDER_MODELS[v]?.[0]?.value ?? "";
-              setModel(def);
-              persist("legend:model", def);
-            }}
-          >
-            {PROVIDERS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="field">
-          <div className="field-label">
-            <span className="prompt">&gt;</span> model
-          </div>
-          <select
-            value={model}
-            onChange={(e) => { setModel(e.target.value); persist("legend:model", e.target.value); }}
-          >
-            {(PROVIDER_MODELS[provider] ?? []).map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="field">
-          <div className="field-label">
-            <span className="prompt">&gt;</span> pipeline step
-          </div>
-          <select
-            value={step}
-            onChange={(e) => { setStep(e.target.value); persist("legend:step", e.target.value); }}
-          >
-            {STEPS.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="run-row">
-          <button
-            className={`run-btn${loading ? " loading" : ""}`}
+        {/* Run / Cancel */}
+        <div className="flex items-center gap-3">
+          <Button
             onClick={handleRun}
             disabled={loading}
+            className="font-mono"
           >
             {loading
               ? pipelineStep > 0
@@ -342,38 +378,90 @@ function App() {
               : step === "full"
                 ? "$ run full pipeline"
                 : `$ run ${step}`}
-          </button>
+          </Button>
           {loading && (
-            <button className="cancel-btn" onClick={handleCancel}>
+            <Button variant="destructive" onClick={handleCancel} className="font-mono">
               cancel
-            </button>
+            </Button>
           )}
         </div>
 
+        {/* Inline error */}
         {error && lines.length === 0 && (
-          <div className="inline-error">{error}</div>
+          <p className="text-sm text-destructive font-mono">{error}</p>
         )}
 
+        {/* Credit / API key error banner */}
+        {creditError && (
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 space-y-1">
+            <p className="text-sm font-semibold text-destructive font-mono">API Credit Error</p>
+            <p className="text-sm text-destructive/90">{creditError}</p>
+          </div>
+        )}
+
+        {/* Pipeline progress */}
         {step === "full" && (pipelineStep > 0 || pipelineCompleted.length > 0) && (
-          <div className="pipeline-progress">
+          <div className="flex items-center gap-4">
             {PIPELINE_STEPS.map((ps, i) => {
               const isCompleted = pipelineCompleted.includes(i);
               const isActive = pipelineStep === i + 1;
-              const isPending = !isCompleted && !isActive;
               return (
-                <div key={ps.step} className={`pipeline-segment${isActive ? " active" : ""}${isCompleted ? " completed" : ""}${isPending ? " pending" : ""}`}>
-                  <span className="pipeline-dot" />
-                  <span className="pipeline-label">Part {i + 1}</span>
+                <div key={ps.step} className="flex items-center gap-1.5">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full transition-colors ${
+                      isCompleted
+                        ? "bg-primary"
+                        : isActive
+                          ? "bg-primary animate-pulse"
+                          : "bg-muted-foreground/30"
+                    }`}
+                  />
+                  <span
+                    className={`text-xs font-mono ${
+                      isCompleted
+                        ? "text-primary"
+                        : isActive
+                          ? "text-primary"
+                          : "text-muted-foreground"
+                    }`}
+                  >
+                    Part {i + 1}
+                  </span>
                 </div>
               );
             })}
           </div>
         )}
 
+        {/* Output */}
         {lines.length > 0 && (
-          <div className={`output-block ${success === true ? "success" : success === false ? "error" : "running"}`}>
-            <div className="output-header">
-              <span className="status-dot" />
+          <div
+            className={`rounded-lg border overflow-hidden ${
+              success === true
+                ? "border-primary/50"
+                : success === false
+                  ? "border-destructive/50"
+                  : "border-border"
+            }`}
+          >
+            <div
+              className={`flex items-center gap-2 px-3 py-2 text-xs font-mono ${
+                success === true
+                  ? "bg-primary/10 text-primary"
+                  : success === false
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-card text-muted-foreground"
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  success === true
+                    ? "bg-primary"
+                    : success === false
+                      ? "bg-destructive"
+                      : "bg-muted-foreground animate-pulse"
+                }`}
+              />
               {success === null
                 ? pipelineStep > 0
                   ? `running step ${pipelineStep}/3 — ${PIPELINE_STEPS[pipelineStep - 1].label}`
@@ -382,15 +470,18 @@ function App() {
                   ? step === "full" ? "exit 0 — pipeline complete" : "exit 0 — success"
                   : step === "full" && pipelineStep === 0 ? `exit 1 — failed at step ${pipelineCompleted.length + 1}/3` : "exit 1 — failed"}
             </div>
-            <div className="output-content" ref={outputRef}>
+            <div
+              ref={outputRef}
+              className="max-h-80 overflow-y-auto p-3 bg-card font-mono text-xs leading-relaxed"
+            >
               {lines.map((line, i) => (
                 <pre
                   key={i}
-                  className={
+                  className={`whitespace-pre-wrap break-words ${
                     line.type === "stderr" || line.type === "error"
-                      ? "line-error"
-                      : "line-out"
-                  }
+                      ? "text-destructive"
+                      : "text-foreground"
+                  }`}
                 >
                   {line.text}
                 </pre>
@@ -399,8 +490,12 @@ function App() {
           </div>
         )}
 
-        <div style={{ textAlign: "center", marginTop: 24 }}>
-          <Link to="/map" className="nav-link">
+        {/* Map link */}
+        <div className="text-center">
+          <Link
+            to="/map"
+            className="text-sm text-primary hover:text-primary/80 font-mono transition-colors"
+          >
             View Architecture Map &rarr;
           </Link>
         </div>

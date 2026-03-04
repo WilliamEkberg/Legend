@@ -5,11 +5,19 @@ import asyncio
 import json
 import os
 import queue as _queue
+import shutil
 import subprocess
+import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import sqlite3
+
+# Fix Windows asyncio subprocess issue with uvicorn --reload
+# Without this, asyncio.create_subprocess_exec raises NotImplementedError
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -28,6 +36,15 @@ app = FastAPI()
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 DB_PATH = OUTPUT_DIR / "legend.db"
+
+
+@app.on_event("startup")
+def _ensure_db():
+    """Create the output directory and initialise the database if missing."""
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    conn = db.connect(str(DB_PATH))
+    db.init_schema(conn)
+    db.close(conn)
 SCIP_ENGINE_DIR = Path(__file__).resolve().parent / "scip-engine"
 
 
@@ -89,14 +106,22 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
     Priority: Docker (all indexers bundled) > local binary > script fallback.
     Set SCIP_LOCAL=1 to force local binary.
     """
+    # Resolve to canonical absolute path (fixes macOS Docker mount issues)
+    source_path = Path(source_dir).resolve()
+    if not source_path.is_dir():
+        raise ValueError(f"Source directory does not exist: {source_dir}")
+    source_dir = str(source_path)
+
     indexer_binary = SCIP_ENGINE_DIR / "legend-indexer" / "target" / "release" / "legend-indexer"
     scip_script = SCIP_ENGINE_DIR / "scripts" / "analyze-local.sh"
     force_local = os.environ.get("SCIP_LOCAL") == "1"
 
     # Docker preferred (has all indexers + runtimes bundled)
+    # Use --mount instead of -v: fails loudly if source path doesn't exist (macOS -v silently mounts empty dir)
     if not force_local and _ensure_docker_image():
         return ["docker", "run", "--rm",
-                "-v", f"{source_dir}:/workspace", "-v", f"{str(OUTPUT_DIR)}:/output",
+                "--mount", f"type=bind,source={source_dir},target=/workspace",
+                "--mount", f"type=bind,source={str(OUTPUT_DIR)},target=/output",
                 SCIP_LOCAL_IMAGE, "/workspace", "--output", "/output"], "Docker (scip-engine image)"
 
     # Local binary fallback
@@ -106,8 +131,19 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
         return ["bash", str(scip_script), source_dir, str(OUTPUT_DIR)], "analyze-local.sh script"
     else:
         return ["docker", "run", "--rm",
-                "-v", f"{source_dir}:/workspace", "-v", f"{str(OUTPUT_DIR)}:/output",
+                "--mount", f"type=bind,source={source_dir},target=/workspace",
+                "--mount", f"type=bind,source={str(OUTPUT_DIR)},target=/output",
                 SCIP_LOCAL_IMAGE, "/workspace", "--output", "/output"], "Docker (scip-engine image)"
+
+
+SCIP_DOCKER_MAX_RETRIES = 3
+SCIP_DOCKER_RETRY_DELAY = 2  # seconds
+SCIP_DOCKER_MAX_RETRIES = 3  # max attempts for Docker mount issues
+
+
+def _is_docker_scip_cmd(cmd: list[str]) -> bool:
+    """Check if the SCIP command uses Docker (may need retry for mount issues)."""
+    return len(cmd) > 0 and cmd[0] == "docker"
 
 
 PROVIDER_ENV_MAP = {
@@ -116,6 +152,19 @@ PROVIDER_ENV_MAP = {
     "google": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
 }
+
+
+def _get_opencode_executable() -> str:
+    """Get the full path to the opencode executable.
+
+    On Windows, npm-installed global packages create .cmd files that need
+    to be explicitly specified for asyncio.create_subprocess_exec.
+    """
+    opencode_path = shutil.which("opencode")
+    if opencode_path:
+        return opencode_path
+    # Fallback - let subprocess try to find it
+    return "opencode"
 
 
 def build_prompt(provider: str, model: str, repo_path: str | None = None) -> str:
@@ -385,11 +434,12 @@ async def run_opencode(req: RunRequest):
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    cmd = ["opencode", "run", "--agent", "build", "-m", model, prompt]
+    cmd = [_get_opencode_executable(), "run", "--agent", "build", "-m", model]
 
     try:
         result = subprocess.run(
             cmd,
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=120,
@@ -997,12 +1047,28 @@ async def generate_tickets(body: TicketGenerateRequest):
 
         prompt = _build_ticket_prompt(collapsed)
 
-        response = litellm.completion(
-            model=body.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
-            api_key=body.api_key,
-        )
+        try:
+            response = litellm.completion(
+                model=body.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=4096,
+                api_key=body.api_key,
+            )
+        except litellm.AuthenticationError:
+            raise HTTPException(
+                status_code=401,
+                detail="API authentication failed. Your API key may be invalid or expired.",
+            )
+        except (litellm.RateLimitError, litellm.APIError) as e:
+            msg = str(e).lower()
+            credit_keywords = ["insufficient", "quota", "billing", "credits", "budget", "exceeded", "payment", "balance", "plan limit", "spending limit"]
+            if any(kw in msg for kw in credit_keywords):
+                raise HTTPException(
+                    status_code=402,
+                    detail="You have run out of API credits. Please add credits to your account and try again.",
+                )
+            raise HTTPException(status_code=502, detail=f"LLM API error: {e}")
+
         raw_text = response.choices[0].message.content.strip()
 
         # Extract JSON array from response (handle markdown code fences)
@@ -1109,6 +1175,12 @@ async def run_stream(req: StreamRunRequest):
         source_dir = req.repo_path or str(PROJECT_DIR)
 
         async def part1_stream():
+            # Validate source directory exists (macOS Docker silently fails otherwise)
+            if not Path(source_dir).is_dir():
+                yield f"data: {json.dumps({'type': 'error', 'text': f'Source directory not found: {source_dir}'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
+                return
+
             OUTPUT_DIR.mkdir(exist_ok=True)
 
             # ----------------------------------------------------------------
@@ -1118,16 +1190,26 @@ async def run_stream(req: StreamRunRequest):
                 project_dir=source_dir,
                 output_dir=str(OUTPUT_DIR),
             )
-            opencode_cmd = ["opencode", "run", "--agent", "build", "-m", model, modules_prompt]
+
+            # Use shell=True on Windows to handle long prompts via stdin piping
+            # This avoids Windows command line length limits
+            opencode_exe = _get_opencode_executable()
+            opencode_cmd = [opencode_exe, "run", "--agent", "build", "-m", model]
 
             try:
                 opencode_proc = await asyncio.create_subprocess_exec(
                     *opencode_cmd,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(OUTPUT_DIR),
                     env=env,
                 )
+                # Write prompt to stdin and close it
+                opencode_proc.stdin.write(modules_prompt.encode("utf-8"))
+                await opencode_proc.stdin.drain()
+                opencode_proc.stdin.close()
+                await opencode_proc.stdin.wait_closed()
             except FileNotFoundError:
                 yield f"data: {json.dumps({'type': 'error', 'text': 'opencode CLI not found. Install with: npm i -g opencode-ai@latest'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
@@ -1185,6 +1267,25 @@ async def run_stream(req: StreamRunRequest):
 
             if scip_proc is not None:
                 scip_rc = await scip_proc.wait()
+                if scip_rc != 0 and _is_docker_scip_cmd(scip_cmd):
+                    # Docker volume mount may have failed — retry
+                    for attempt in range(2, SCIP_DOCKER_MAX_RETRIES + 1):
+                        yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Docker mount may have failed (exit {scip_rc}). Retrying ({attempt}/{SCIP_DOCKER_MAX_RETRIES})...'})}\n\n"
+                        await asyncio.sleep(SCIP_DOCKER_RETRY_DELAY)
+                        retry_proc = await asyncio.create_subprocess_exec(
+                            *scip_cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.STDOUT,
+                            env={**os.environ},
+                        )
+                        async for line in retry_proc.stdout:
+                            text = line.decode("utf-8", errors="replace").rstrip("\n")
+                            if text:
+                                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+                        scip_rc = await retry_proc.wait()
+                        if scip_rc == 0:
+                            break
+
                 if scip_rc != 0:
                     yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Warning: indexer exited with code {scip_rc}. Part 2 will retry.'})}\n\n"
                 else:
@@ -1235,16 +1336,23 @@ async def run_stream(req: StreamRunRequest):
             edges_prompt = edges_system_prompt() + "\n\n---\n\n" + edges_variables_prompt(
                 output_dir=str(OUTPUT_DIR),
             )
-            edges_cmd = ["opencode", "run", "--agent", "build", "-m", model, edges_prompt]
+
+            edges_cmd = [_get_opencode_executable(), "run", "--agent", "build", "-m", model]
 
             try:
                 edges_proc = await asyncio.create_subprocess_exec(
                     *edges_cmd,
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(OUTPUT_DIR),
                     env=env,
                 )
+                # Write prompt to stdin and close it
+                edges_proc.stdin.write(edges_prompt.encode("utf-8"))
+                await edges_proc.stdin.drain()
+                edges_proc.stdin.close()
+                await edges_proc.stdin.wait_closed()
             except FileNotFoundError:
                 yield f"data: {json.dumps({'type': 'error', 'text': 'opencode CLI not found.'})}\n\n"
                 db.complete_pipeline_run(conn, run_id, "failed")
@@ -1340,19 +1448,30 @@ async def run_stream(req: StreamRunRequest):
                     scip_cmd, scip_desc = _get_scip_cmd(source_dir)
                     yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Using {scip_desc}'})}\n\n"
 
-                    scip_proc = await asyncio.create_subprocess_exec(
-                        *scip_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT,
-                        env={**os.environ},
-                    )
+                    use_docker_retry = _is_docker_scip_cmd(scip_cmd)
+                    scip_rc = None
 
-                    async for line in scip_proc.stdout:
-                        text = line.decode("utf-8", errors="replace").rstrip("\n")
-                        if text:
-                            yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+                    for attempt in range(1, SCIP_DOCKER_MAX_RETRIES + 1 if use_docker_retry else 2):
+                        if attempt > 1:
+                            yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Docker mount may have failed. Retrying ({attempt}/{SCIP_DOCKER_MAX_RETRIES})...'})}\n\n"
+                            await asyncio.sleep(SCIP_DOCKER_RETRY_DELAY)
 
-                    scip_rc = await scip_proc.wait()
+                        scip_proc = await asyncio.create_subprocess_exec(
+                            *scip_cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.STDOUT,
+                            env={**os.environ},
+                        )
+
+                        async for line in scip_proc.stdout:
+                            text = line.decode("utf-8", errors="replace").rstrip("\n")
+                            if text:
+                                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+
+                        scip_rc = await scip_proc.wait()
+                        if scip_rc == 0:
+                            break
+
                     if scip_rc != 0:
                         yield f"data: {json.dumps({'type': 'error', 'text': f'[SCIP] Indexer failed with exit code {scip_rc}'})}\n\n"
                         yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
@@ -1411,11 +1530,19 @@ async def run_stream(req: StreamRunRequest):
 
                     yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Pipeline failed: {e}'})}\n\n"
+                    from component_discovery.llm_client import InsufficientCreditsError
+                    if isinstance(e, InsufficientCreditsError):
+                        yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Pipeline failed: {e}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Error: {e}'})}\n\n"
+                from component_discovery.llm_client import InsufficientCreditsError
+                if isinstance(e, InsufficientCreditsError):
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Error: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
         return StreamingResponse(part2_stream(), media_type="text/event-stream")
@@ -1447,7 +1574,11 @@ async def run_stream(req: StreamRunRequest):
                 yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 3] Pipeline failed: {e}'})}\n\n"
+                from map_descriptions.llm_client import InsufficientCreditsError
+                if isinstance(e, InsufficientCreditsError):
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 3] Pipeline failed: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
         return StreamingResponse(part3_stream(), media_type="text/event-stream")
@@ -1580,11 +1711,19 @@ async def run_stream(req: StreamRunRequest):
                     await task
                     yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Failed: {e}'})}\n\n"
+                    from component_discovery.llm_client import InsufficientCreditsError
+                    if isinstance(e, InsufficientCreditsError):
+                        yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Failed: {e}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Error: {e}'})}\n\n"
+                from component_discovery.llm_client import InsufficientCreditsError
+                if isinstance(e, InsufficientCreditsError):
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Error: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
         return StreamingResponse(edges_stream(), media_type="text/event-stream")
@@ -1616,7 +1755,11 @@ async def run_stream(req: StreamRunRequest):
                 yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
 
             except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'text': f'[Re-validate] Pipeline failed: {e}'})}\n\n"
+                from map_descriptions.llm_client import InsufficientCreditsError
+                if isinstance(e, InsufficientCreditsError):
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[API Credits] {e}'})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'error', 'text': f'[Re-validate] Pipeline failed: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
         return StreamingResponse(revalidation_stream(), media_type="text/event-stream")
@@ -1740,3 +1883,77 @@ async def get_validation_summary():
         return db.get_validation_summary(conn)
     finally:
         db.close(conn)
+
+
+# ---------------------------------------------------------------------------
+# Chat (MCP-based)
+# ---------------------------------------------------------------------------
+
+from chat import (
+    get_or_create_session,
+    delete_session,
+    run_chat_turn,
+    confirm_changes as do_confirm_changes,
+    shutdown_mcp,
+)
+
+
+class ChatRequest(BaseModel):
+    message: str
+    mode: str = "ask"  # "ask" | "edit"
+    session_id: str | None = None
+    api_key: str
+    provider: str = "anthropic"
+    model: str | None = None
+
+
+class ConfirmRequest(BaseModel):
+    session_id: str
+    change_ids: list[str]
+
+
+@app.post("/api/chat")
+async def chat_endpoint(req: ChatRequest):
+    """Stream a chat response as SSE events."""
+    session = get_or_create_session(req.session_id)
+
+    async def event_stream():
+        try:
+            async for event in run_chat_turn(
+                message=req.message,
+                mode=req.mode,
+                session=session,
+                db_path=str(DB_PATH),
+                api_key=req.api_key,
+                provider=req.provider,
+                model=req.model,
+            ):
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+        except Exception as e:
+            error_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
+            yield f"data: {json.dumps({'type': 'error', 'text': error_msg})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/chat/confirm")
+async def confirm_changes_endpoint(req: ConfirmRequest):
+    """Apply previously proposed changes."""
+    results = await do_confirm_changes(
+        session_id=req.session_id,
+        change_ids=req.change_ids,
+        db_path=str(DB_PATH),
+    )
+    return {"results": results}
+
+
+@app.delete("/api/chat/session/{session_id}")
+async def clear_chat_session(session_id: str):
+    """Clear conversation history for a session."""
+    deleted = delete_session(session_id)
+    return {"ok": deleted}
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await shutdown_mcp()

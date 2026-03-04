@@ -120,9 +120,15 @@ Additional endpoints implemented in `main.py` (documented in their own info file
 #### Helper: `_get_scip_cmd(source_dir)`
 
 Returns `(command_list, description_string)` for the best available SCIP indexer:
-1. Local binary: `backend/scip-engine/legend-indexer/target/release/legend-indexer`
-2. Shell script: `backend/scip-engine/scripts/analyze-local.sh`
-3. Fallback: Docker `scip-engine` image
+1. Docker `scip-engine` image (preferred — all indexers bundled)
+2. Local binary: `backend/scip-engine/legend-indexer/target/release/legend-indexer`
+3. Shell script: `backend/scip-engine/scripts/analyze-local.sh`
+
+Set `SCIP_LOCAL=1` to force local binary over Docker.
+
+#### Docker SCIP Retry Logic
+
+On macOS, Docker Desktop's VirtioFS can intermittently fail to populate volume mounts, causing the SCIP indexer to see 0 files. The indexer exits with code 1 in this case (see [SCIP Indexing docs](../component_discovery/info_component_discovery_scip_indexing.md)). The backend retries Docker SCIP invocations up to `SCIP_DOCKER_MAX_RETRIES` (3) times with a `SCIP_DOCKER_RETRY_DELAY` (2s) pause between attempts. This applies to both `part1_stream()` and `part2_stream()`. Non-Docker indexers (local binary/script) are not retried.
 
 #### Provider Mapping
 
@@ -184,6 +190,12 @@ If no model is specified in the API request, backend defaults apply:
 
 **Why:** SCIP indexing scans the whole codebase and can be slow. It has no dependency on Part 1's JSON output. Running it in parallel means the `.scip` file is ready (or nearly ready) by the time the user clicks "Run Part 2". Part 2 detects the existing file and skips the indexer entirely. SCIP failure during Part 1 is non-fatal — Part 2 falls back to running the indexer itself.
 
+#### Docker SCIP retry on mount failure
+
+**Choice:** Retry Docker SCIP invocations up to 3 times (2s delay) when the indexer exits with code 1 due to an empty volume mount.
+
+**Why:** Docker Desktop for Mac has an intermittent VirtioFS race condition where volume mounts are empty at container start. Without retry, the indexer silently reports 0 files and produces no `.scip` output, causing Part 2 (Component Discovery) to fail. The indexer now exits with code 1 when `total_files == 0`, and both `part1_stream()` and `part2_stream()` retry Docker-based invocations. Non-Docker indexers are not retried.
+
 ---
 
 ## Planned Changes
@@ -213,3 +225,4 @@ If no model is specified in the API request, backend defaults apply:
 - 2026-02-17 :: william :: Migrated all LLM calls from anthropic SDK to litellm. Updated PROVIDER_ENV_MAP (google → GEMINI_API_KEY). Ticket generation endpoint now uses litellm.completion(). Replaced anthropic>=0.25 with litellm in requirements.txt.
 - 2026-02-18 :: william :: Doc sync: Marked part3 as implemented. Clarified part1 runs both modules + edges steps. Added "edges" step option. Added cross-references to decision/ticket endpoints documented in other info files.
 - 2026-02-18 :: william :: Added backend test suite (backend/tests/). test_api_endpoints.py covers /api/map, decision CRUD, /api/change-records, /api/tickets (15 tests using FastAPI TestClient with temp DB).
+- 2026-03-02 :: william :: Added Docker SCIP retry logic: both part1_stream() and part2_stream() retry Docker SCIP invocations up to 3 times (2s delay) when indexer fails due to empty volume mount. Fixed _get_scip_cmd() priority order in docs (Docker first, not local first). Added SCIP_DOCKER_MAX_RETRIES, SCIP_DOCKER_RETRY_DELAY constants and _is_docker_scip_cmd() helper.

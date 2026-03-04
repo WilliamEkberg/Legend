@@ -14,6 +14,8 @@ import {
   compareVersions,
   createManualVersion,
 } from "../../api/client";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface VersionPanelProps {
   onClose: () => void;
@@ -90,64 +92,65 @@ export function VersionPanel({ onClose }: VersionPanelProps) {
     }
   }
 
-  function triggerCls(trigger: string) {
-    switch (trigger) {
-      case "part3": return "version-trigger-part3";
-      case "revalidation": return "version-trigger-reval";
-      case "manual": return "version-trigger-manual";
-      default: return "";
-    }
-  }
+  const triggerColor: Record<string, string> = {
+    part3: "bg-blue-500/10 text-blue-600",
+    revalidation: "bg-amber-500/10 text-amber-600",
+    manual: "bg-green-500/10 text-green-600",
+  };
 
   return (
     <AnimatePresence>
       <motion.div
-        className="version-panel"
+        className="absolute inset-x-0 bottom-0 max-h-[60%] bg-card border-t border-border shadow-xl z-20 flex flex-col rounded-t-xl"
         initial={{ y: "100%" }}
         animate={{ y: 0 }}
         exit={{ y: "100%" }}
         transition={{ type: "spring", damping: 40, stiffness: 200 }}
       >
-        <div className="version-panel-header">
-          <div className="version-panel-title-row">
-            <h2 className="version-panel-title">Version History</h2>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-foreground">Version History</h2>
             {view.kind !== "list" && (
-              <button
-                className="version-back-btn"
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs"
                 onClick={() => setView({ kind: "list" })}
               >
                 Back to list
-              </button>
+              </Button>
             )}
           </div>
-          <div className="version-panel-actions">
-            <button
-              className="version-snapshot-btn"
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs"
               onClick={handleSnapshot}
               disabled={saving}
             >
               {saving ? "Saving..." : "Save Snapshot"}
-            </button>
-            <button className="version-panel-close" onClick={onClose}>
+            </Button>
+            <Button variant="ghost" size="sm" className="text-lg px-2" onClick={onClose}>
               &times;
-            </button>
+            </Button>
           </div>
         </div>
 
-        <div className="version-panel-body">
-          {loading && <p className="version-empty">Loading versions...</p>}
+        <div className="flex-1 overflow-y-auto p-4">
+          {loading && <p className="text-sm text-muted-foreground italic">Loading versions...</p>}
 
           {!loading && view.kind === "list" && (
             <>
               {versions.length === 0 ? (
-                <p className="version-empty">
+                <p className="text-sm text-muted-foreground italic">
                   No versions yet. Run Part 3 or save a manual snapshot.
                 </p>
               ) : (
                 <>
-                  <div className="version-compare-bar">
+                  <div className="flex items-center gap-2 mb-4">
                     <select
-                      className="version-compare-select"
+                      className="flex h-8 flex-1 rounded-md border border-input bg-transparent px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       value={compareA}
                       onChange={(e) => setCompareA(e.target.value ? Number(e.target.value) : "")}
                     >
@@ -158,9 +161,9 @@ export function VersionPanel({ onClose }: VersionPanelProps) {
                         </option>
                       ))}
                     </select>
-                    <span className="version-compare-vs">vs</span>
+                    <span className="text-xs text-muted-foreground">vs</span>
                     <select
-                      className="version-compare-select"
+                      className="flex h-8 flex-1 rounded-md border border-input bg-transparent px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       value={compareB}
                       onChange={(e) => setCompareB(e.target.value ? Number(e.target.value) : "")}
                     >
@@ -171,47 +174,53 @@ export function VersionPanel({ onClose }: VersionPanelProps) {
                         </option>
                       ))}
                     </select>
-                    <button
-                      className="version-compare-btn"
+                    <Button
+                      size="sm"
+                      className="text-xs"
                       onClick={handleCompare}
                       disabled={compareA === "" || compareB === "" || compareA === compareB}
                     >
                       Compare
-                    </button>
+                    </Button>
                   </div>
 
-                  <table className="version-table">
+                  <table className="w-full text-sm">
                     <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Trigger</th>
-                        <th>Decisions</th>
-                        <th>Date</th>
-                        <th></th>
+                      <tr className="border-b border-border text-left">
+                        <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">#</th>
+                        <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">Trigger</th>
+                        <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">Decisions</th>
+                        <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">Date</th>
+                        <th className="py-2"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {versions.map((v) => (
-                        <tr key={v.id}>
-                          <td className="version-num">v{v.version_number}</td>
-                          <td>
-                            <span className={`version-trigger ${triggerCls(v.trigger)}`}>
+                        <tr key={v.id} className="border-b border-border/50 hover:bg-muted/50">
+                          <td className="py-2 pr-3 text-xs font-mono text-foreground">v{v.version_number}</td>
+                          <td className="py-2 pr-3">
+                            <span className={cn(
+                              "text-xs px-1.5 py-0.5 rounded",
+                              triggerColor[v.trigger] ?? "bg-muted text-muted-foreground"
+                            )}>
                               {triggerLabel(v.trigger)}
                             </span>
                           </td>
-                          <td className="version-count">
+                          <td className="py-2 pr-3 text-xs text-muted-foreground">
                             {v.summary?.total_decisions ?? "—"}
                           </td>
-                          <td className="version-date">
+                          <td className="py-2 pr-3 text-xs text-muted-foreground">
                             {new Date(v.created_at).toLocaleDateString()}
                           </td>
-                          <td>
-                            <button
-                              className="version-view-btn"
+                          <td className="py-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-xs h-7"
                               onClick={() => handleViewDetail(v.id)}
                             >
                               View
-                            </button>
+                            </Button>
                           </td>
                         </tr>
                       ))}
@@ -247,7 +256,7 @@ function VersionDetailView({
   version: MapVersion | null;
   decisions: VersionDecision[];
 }) {
-  if (!version) return <p className="version-empty">Loading...</p>;
+  if (!version) return <p className="text-sm text-muted-foreground italic">Loading...</p>;
 
   // Group decisions by module
   const groups = new Map<string, VersionDecision[]>();
@@ -258,31 +267,33 @@ function VersionDetailView({
   }
 
   return (
-    <div className="version-detail">
-      <div className="version-detail-header">
-        <h3>Version {version.version_number}</h3>
-        <span className="version-detail-meta">
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-semibold text-foreground">Version {version.version_number}</h3>
+        <span className="text-xs text-muted-foreground">
           {version.trigger} — {new Date(version.created_at).toLocaleString()}
         </span>
       </div>
       {version.summary && (
-        <div className="version-detail-summary">
+        <div className="flex gap-4 text-xs text-muted-foreground">
           <span>{version.summary.modules} modules</span>
           <span>{version.summary.components} components</span>
           <span>{version.summary.total_decisions} decisions</span>
         </div>
       )}
       {Array.from(groups.entries()).map(([moduleName, decs]) => (
-        <div key={moduleName} className="version-decision-group">
-          <h4 className="version-group-title">{moduleName}</h4>
+        <div key={moduleName} className="space-y-2">
+          <h4 className="text-sm font-semibold text-foreground">{moduleName}</h4>
           {decs.map((d, i) => (
-            <div key={i} className="version-decision-item">
-              <span className="version-decision-category">{d.category}</span>
-              {d.component_name && (
-                <span className="version-decision-component">{d.component_name}</span>
-              )}
-              <p className="version-decision-text">{d.text}</p>
-              <span className="version-decision-source">{d.source}</span>
+            <div key={i} className="border-l-2 border-border pl-3 py-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{d.category}</span>
+                {d.component_name && (
+                  <span className="text-xs text-primary">{d.component_name}</span>
+                )}
+              </div>
+              <p className="text-sm text-foreground mt-0.5">{d.text}</p>
+              <span className="text-[10px] text-muted-foreground">{d.source}</span>
             </div>
           ))}
         </div>
@@ -298,62 +309,64 @@ function VersionCompareView({
 }: {
   comparison: VersionComparison | null;
 }) {
-  if (!comparison) return <p className="version-empty">Loading comparison...</p>;
+  if (!comparison) return <p className="text-sm text-muted-foreground italic">Loading comparison...</p>;
 
   return (
-    <div className="version-compare">
-      <div className="version-compare-header">
-        <h3>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-semibold text-foreground">
           v{comparison.version_a.version_number} vs v{comparison.version_b.version_number}
         </h3>
-        <span className="version-compare-stats">
+        <span className="text-xs text-muted-foreground">
           +{comparison.added.length} added / -{comparison.removed.length} removed / ~{comparison.changed.length} changed / {comparison.unchanged_count} unchanged
         </span>
       </div>
 
       {comparison.added.length > 0 && (
-        <div className="version-diff-section">
-          <h4 className="version-diff-label version-diff-added">Added ({comparison.added.length})</h4>
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold text-green-600">Added ({comparison.added.length})</h4>
           {comparison.added.map((d, i) => (
-            <div key={i} className="version-diff-item version-diff-item-added">
-              <span className="version-diff-context">
+            <div key={i} className="border-l-4 border-green-500 pl-3 py-2 bg-green-500/5 rounded-r">
+              <span className="text-xs text-muted-foreground">
                 {d.module_name}{d.component_name ? ` / ${d.component_name}` : ""}
               </span>
-              <span className="version-diff-category">{d.category}</span>
-              <p className="version-diff-text">{d.text}</p>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground ml-2">{d.category}</span>
+              <p className="text-sm text-foreground mt-0.5">{d.text}</p>
             </div>
           ))}
         </div>
       )}
 
       {comparison.removed.length > 0 && (
-        <div className="version-diff-section">
-          <h4 className="version-diff-label version-diff-removed">Removed ({comparison.removed.length})</h4>
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold text-red-600">Removed ({comparison.removed.length})</h4>
           {comparison.removed.map((d, i) => (
-            <div key={i} className="version-diff-item version-diff-item-removed">
-              <span className="version-diff-context">
+            <div key={i} className="border-l-4 border-red-500 pl-3 py-2 bg-red-500/5 rounded-r">
+              <span className="text-xs text-muted-foreground">
                 {d.module_name}{d.component_name ? ` / ${d.component_name}` : ""}
               </span>
-              <span className="version-diff-category">{d.category}</span>
-              <p className="version-diff-text">{d.text}</p>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground ml-2">{d.category}</span>
+              <p className="text-sm text-foreground mt-0.5">{d.text}</p>
             </div>
           ))}
         </div>
       )}
 
       {comparison.changed.length > 0 && (
-        <div className="version-diff-section">
-          <h4 className="version-diff-label version-diff-changed">Changed ({comparison.changed.length})</h4>
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold text-amber-600">Changed ({comparison.changed.length})</h4>
           {comparison.changed.map((d, i) => (
-            <div key={i} className="version-diff-item version-diff-item-changed">
-              <span className="version-diff-context">
+            <div key={i} className="border-l-4 border-amber-500 pl-3 py-2 bg-amber-500/5 rounded-r">
+              <span className="text-xs text-muted-foreground">
                 {d.module_name}{d.component_name ? ` / ${d.component_name}` : ""}
               </span>
-              <div className="version-diff-old">
-                <span className="version-diff-tag">Old:</span> {d.old.text}
-              </div>
-              <div className="version-diff-new">
-                <span className="version-diff-tag">New:</span> {d.new.text}
+              <div className="mt-1 text-sm">
+                <div className="text-red-600/70 line-through">
+                  <span className="text-[10px] font-medium mr-1">Old:</span> {d.old.text}
+                </div>
+                <div className="text-green-600">
+                  <span className="text-[10px] font-medium mr-1">New:</span> {d.new.text}
+                </div>
               </div>
             </div>
           ))}
@@ -361,7 +374,7 @@ function VersionCompareView({
       )}
 
       {comparison.added.length === 0 && comparison.removed.length === 0 && comparison.changed.length === 0 && (
-        <p className="version-empty">No differences between these versions.</p>
+        <p className="text-sm text-muted-foreground italic">No differences between these versions.</p>
       )}
     </div>
   );
