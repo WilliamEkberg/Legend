@@ -1,4 +1,4 @@
-# Legend
+# Legend: Stanford course project 
 
 Legend automatically generates an architecture map of any codebase. It discovers modules, clusters files into components, and extracts technical decisions — producing a structured, navigable map of how a system is built and why.
 
