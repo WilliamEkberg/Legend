@@ -50,6 +50,7 @@ def discover_components(
     client: LLMClient | None = None,
     run_id: int | None = None,
     log_fn: callable = print,
+    skip_llm: bool = False,
 ) -> None:
     """
     Discover L3 components for a single module and write to DB.
@@ -133,19 +134,32 @@ def discover_components(
     log_fn(f"  [7/9] Extracting per-file metadata...")
     file_metadata = extract_file_metadata(scip_path, source_dir, source_files)
 
-    # Step 9: LLM refinement
-    if client is None:
-        client = LLMClient()
-
+    # Step 9: LLM refinement (or skip if skip_llm mode)
     # Convert to cluster_id -> files for analyzer
     cluster_id_files = defaultdict(list)
     for file_path, cluster_id in clusters.items():
         cluster_id_files[cluster_id].append(file_path)
 
-    log_fn(f"  [8/9] LLM analysis: {len(cluster_id_files)} cluster(s)...")
-    components, misplaced = analyze_clusters(
-        cluster_id_files, file_metadata, parsed["call_edges"], client, log_fn=log_fn
-    )
+    if skip_llm:
+        log_fn(f"  [8/9] SKIP_LLM: Skipping LLM analysis, using placeholder names...")
+        # Generate placeholder components without LLM
+        components = []
+        for cluster_id, files in cluster_id_files.items():
+            comp_name = f"component_{cluster_id}"
+            components.append({
+                "name": comp_name,
+                "purpose": f"[SKIP_LLM] Placeholder component containing {len(files)} file(s)",
+                "files": files,
+                "confidence": 0.5,
+            })
+        misplaced = []
+    else:
+        if client is None:
+            client = LLMClient()
+        log_fn(f"  [8/9] LLM analysis: {len(cluster_id_files)} cluster(s)...")
+        components, misplaced = analyze_clusters(
+            cluster_id_files, file_metadata, parsed["call_edges"], client, log_fn=log_fn
+        )
 
     # Step 10: Reconcile misplaced files
     if misplaced:
@@ -174,10 +188,12 @@ def discover_components(
     )
     log_fn(f"  [Phase 2] {len(l3_edges)} edge(s) after aggregation")
 
-    # Step 12: LLM label — batch label all edges in-memory
-    if l3_edges and client:
+    # Step 12: LLM label — batch label all edges in-memory (skip if skip_llm mode)
+    if l3_edges and client and not skip_llm:
         log_fn(f"  [Phase 2] Labeling edges...")
         l3_edges = label_component_edges(l3_edges, components, client, log_fn)
+    elif l3_edges and skip_llm:
+        log_fn(f"  [Phase 2] SKIP_LLM: Skipping edge labeling...")
 
     # Step 13: Write to DB — components + labeled edges together
     _write_to_db(conn, module_id, components, test_assignments, l3_edges, run_id)
@@ -195,6 +211,7 @@ def discover_all_components(
     source_dir: str,
     client: LLMClient | None = None,
     log_fn: callable = print,
+    skip_llm: bool = False,
 ) -> None:
     """
     Discover components for all eligible modules and write to DB.
@@ -246,7 +263,7 @@ def discover_all_components(
 
             comp_before = 0
 
-            discover_components(conn, module_with_dirs, scip_path, source_dir, client, run_id, log_fn=log_fn)
+            discover_components(conn, module_with_dirs, scip_path, source_dir, client, run_id, log_fn=log_fn, skip_llm=skip_llm)
 
             comp_after = conn.execute(
                 "SELECT COUNT(*) FROM components WHERE module_id = ?", (module["id"],)

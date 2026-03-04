@@ -29,6 +29,51 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 DB_PATH = OUTPUT_DIR / "legend.db"
 
+# SKIP_LLM mode: set SKIP_LLM=1 to skip all LLM calls for testing the flow
+SKIP_LLM = os.environ.get("SKIP_LLM", "").lower() in ("1", "true", "yes")
+
+
+def _generate_mock_modules_json(source_dir: str, output_path: Path) -> None:
+    """
+    Generate a mock modules.json for SKIP_LLM mode.
+    Creates a single 'main' module containing all source directories.
+    """
+    source_path = Path(source_dir)
+
+    # Find top-level directories that contain code
+    top_dirs = []
+    for item in source_path.iterdir():
+        if item.is_dir() and not item.name.startswith('.') and item.name not in ('node_modules', '__pycache__', 'venv', '.venv', 'dist', 'build', 'output'):
+            top_dirs.append(item.name)
+
+    # If no directories found, use the root
+    if not top_dirs:
+        top_dirs = ["."]
+
+    mock_data = {
+        "modules": [
+            {
+                "id": "main",
+                "name": "Main Application",
+                "classification": "module",
+                "description": "[SKIP_LLM] Mock module for testing - contains all source code",
+                "sourceOrigin": "in-repo",
+                "directories": top_dirs,
+                "relationships": [],
+                "consumedBy": []
+            }
+        ]
+    }
+
+    with open(output_path, 'w') as f:
+        json.dump(mock_data, f, indent=2)
+
+
+def _generate_mock_edges_json(output_path: Path) -> None:
+    """Generate an empty edges.json for SKIP_LLM mode."""
+    with open(output_path, 'w') as f:
+        json.dump({"edges": []}, f, indent=2)
+
 
 @app.on_event("startup")
 def _ensure_db():
@@ -1160,6 +1205,63 @@ async def run_stream(req: StreamRunRequest):
             OUTPUT_DIR.mkdir(exist_ok=True)
 
             # ----------------------------------------------------------------
+            # SKIP_LLM mode: Generate mock data instead of calling opencode
+            # ----------------------------------------------------------------
+            if SKIP_LLM:
+                yield f"data: {json.dumps({'type': 'stdout', 'text': '[SKIP_LLM] Mode enabled - generating mock module data...'})}\n\n"
+
+                # Generate mock modules.json
+                modules_path = OUTPUT_DIR / MODULES_FILENAME
+                _generate_mock_modules_json(source_dir, modules_path)
+                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SKIP_LLM] Generated {MODULES_FILENAME}'})}\n\n"
+
+                # Generate mock edges.json
+                edges_path = OUTPUT_DIR / EDGES_FILENAME
+                _generate_mock_edges_json(edges_path)
+                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SKIP_LLM] Generated {EDGES_FILENAME}'})}\n\n"
+
+                # Still run SCIP indexer (it's not LLM-based)
+                scip_cmd, scip_desc = _get_scip_cmd(source_dir)
+                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Starting indexer ({scip_desc})...'})}\n\n"
+
+                try:
+                    scip_proc = await asyncio.create_subprocess_exec(
+                        *scip_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                        env={**os.environ},
+                    )
+                    async for line in scip_proc.stdout:
+                        text = line.decode("utf-8", errors="replace").rstrip("\n")
+                        if text:
+                            yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+                    await scip_proc.wait()
+                except FileNotFoundError as exc:
+                    yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Warning: indexer not found ({exc}). Part 2 will run it.'})}\n\n"
+
+                # Ingest mock modules into DB
+                conn = db.connect(str(DB_PATH))
+                db.init_schema(conn)
+                db.clear_modules(conn)
+                run_id = db.start_pipeline_run(conn, "skip_llm_mock")
+                try:
+                    id_map = ingest_l2_modules(conn, str(modules_path), run_id)
+                    yield f"data: {json.dumps({'type': 'stdout', 'text': f'[DB] Ingested {len(id_map)} mock module(s) into database.'})}\n\n"
+                    db.complete_pipeline_run(conn, run_id, "completed")
+                except Exception as e:
+                    db.complete_pipeline_run(conn, run_id, "failed")
+                    yield f"data: {json.dumps({'type': 'stderr', 'text': f'[DB] Module ingestion failed: {e}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
+                    db.close(conn)
+                    return
+                finally:
+                    db.close(conn)
+
+                yield f"data: {json.dumps({'type': 'stdout', 'text': '[SKIP_LLM] Part 1 complete (mock data).'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
+                return
+
+            # ----------------------------------------------------------------
             # Step 1A: Run SCIP indexer in parallel with opencode (modules)
             # ----------------------------------------------------------------
             modules_prompt = modules_system_prompt() + "\n\n---\n\n" + modules_variables_prompt(
@@ -1449,10 +1551,13 @@ async def run_stream(req: StreamRunRequest):
                 # ---- Step 2: Component Discovery ----
                 yield f"data: {json.dumps({'type': 'stdout', 'text': '[Part 2] Starting component discovery...'})}\n\n"
 
+                if SKIP_LLM:
+                    yield f"data: {json.dumps({'type': 'stdout', 'text': '[SKIP_LLM] LLM calls will be skipped in Part 2'})}\n\n"
+
                 from component_discovery.pipeline import discover_all_components
                 from component_discovery.llm_client import LLMClient
 
-                client = LLMClient(model=model, api_key=req.api_key)
+                client = None if SKIP_LLM else LLMClient(model=model, api_key=req.api_key)
 
                 log_q: _queue.Queue = _queue.Queue()
 
@@ -1462,7 +1567,7 @@ async def run_stream(req: StreamRunRequest):
                 def _run_pipeline():
                     conn = db.connect(str(DB_PATH))
                     try:
-                        return discover_all_components(conn, scip_path, source_dir, client, _log)
+                        return discover_all_components(conn, scip_path, source_dir, client, _log, skip_llm=SKIP_LLM)
                     finally:
                         conn.close()
 
@@ -1520,6 +1625,13 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                     return
 
+                # SKIP_LLM mode: skip description generation entirely
+                if SKIP_LLM:
+                    yield f"data: {json.dumps({'type': 'stdout', 'text': '[SKIP_LLM] Skipping Part 3 (description generation requires LLM)'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'stdout', 'text': '[SKIP_LLM] Part 3 skipped successfully.'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'success': True})}\n\n"
+                    return
+
                 yield f"data: {json.dumps({'type': 'stdout', 'text': '[Part 3] Starting map descriptions pipeline...'})}\n\n"
 
                 from map_descriptions.pipeline import run_descriptions_pipeline
@@ -1567,7 +1679,11 @@ async def run_stream(req: StreamRunRequest):
                 from component_discovery.edge_labeler import label_component_edges
                 from component_discovery.llm_client import LLMClient
 
-                edge_client = LLMClient(model=model, api_key=req.api_key)
+                if SKIP_LLM:
+                    yield f"data: {json.dumps({'type': 'stdout', 'text': '[SKIP_LLM] Edge labeling will be skipped'})}\n\n"
+                    edge_client = None
+                else:
+                    edge_client = LLMClient(model=model, api_key=req.api_key)
 
                 log_q: _queue.Queue = _queue.Queue()
 
@@ -1618,9 +1734,11 @@ async def run_stream(req: StreamRunRequest):
                                 parsed["inheritance_edges"],
                             )
 
-                            # LLM label in-memory before DB write
-                            if l3_edges:
+                            # LLM label in-memory before DB write (skip if SKIP_LLM)
+                            if l3_edges and edge_client and not SKIP_LLM:
                                 l3_edges = label_component_edges(l3_edges, components, edge_client, _log)
+                            elif l3_edges and SKIP_LLM:
+                                _log(f"[Edges] SKIP_LLM: Skipping edge labeling")
 
                             # Replace old edges for this module
                             conn.execute("""
