@@ -98,14 +98,22 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
     Priority: Docker (all indexers bundled) > local binary > script fallback.
     Set SCIP_LOCAL=1 to force local binary.
     """
+    # Resolve to canonical absolute path (fixes macOS Docker mount issues)
+    source_path = Path(source_dir).resolve()
+    if not source_path.is_dir():
+        raise ValueError(f"Source directory does not exist: {source_dir}")
+    source_dir = str(source_path)
+
     indexer_binary = SCIP_ENGINE_DIR / "legend-indexer" / "target" / "release" / "legend-indexer"
     scip_script = SCIP_ENGINE_DIR / "scripts" / "analyze-local.sh"
     force_local = os.environ.get("SCIP_LOCAL") == "1"
 
     # Docker preferred (has all indexers + runtimes bundled)
+    # Use --mount instead of -v: fails loudly if source path doesn't exist (macOS -v silently mounts empty dir)
     if not force_local and _ensure_docker_image():
         return ["docker", "run", "--rm",
-                "-v", f"{source_dir}:/workspace", "-v", f"{str(OUTPUT_DIR)}:/output",
+                "--mount", f"type=bind,source={source_dir},target=/workspace",
+                "--mount", f"type=bind,source={str(OUTPUT_DIR)},target=/output",
                 SCIP_LOCAL_IMAGE, "/workspace", "--output", "/output"], "Docker (scip-engine image)"
 
     # Local binary fallback
@@ -115,7 +123,8 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
         return ["bash", str(scip_script), source_dir, str(OUTPUT_DIR)], "analyze-local.sh script"
     else:
         return ["docker", "run", "--rm",
-                "-v", f"{source_dir}:/workspace", "-v", f"{str(OUTPUT_DIR)}:/output",
+                "--mount", f"type=bind,source={source_dir},target=/workspace",
+                "--mount", f"type=bind,source={str(OUTPUT_DIR)},target=/output",
                 SCIP_LOCAL_IMAGE, "/workspace", "--output", "/output"], "Docker (scip-engine image)"
 
 
@@ -1142,6 +1151,12 @@ async def run_stream(req: StreamRunRequest):
         source_dir = req.repo_path or str(PROJECT_DIR)
 
         async def part1_stream():
+            # Validate source directory exists (macOS Docker silently fails otherwise)
+            if not Path(source_dir).is_dir():
+                yield f"data: {json.dumps({'type': 'error', 'text': f'Source directory not found: {source_dir}'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
+                return
+
             OUTPUT_DIR.mkdir(exist_ok=True)
 
             # ----------------------------------------------------------------

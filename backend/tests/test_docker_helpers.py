@@ -124,7 +124,7 @@ class TestEnsureDockerImage:
 class TestGetScipCmd:
     """Tests for _get_scip_cmd()."""
 
-    def test_uses_docker_when_available(self):
+    def test_uses_docker_when_available(self, tmp_path):
         """Uses Docker when image is available."""
         from main import _get_scip_cmd, SCIP_LOCAL_IMAGE
 
@@ -133,24 +133,32 @@ class TestGetScipCmd:
             with mock.patch.dict(os.environ, {}, clear=False):
                 # Remove SCIP_LOCAL if present
                 os.environ.pop("SCIP_LOCAL", None)
-                cmd, desc = _get_scip_cmd("/test/repo")
+                cmd, desc = _get_scip_cmd(str(tmp_path))
                 assert "docker" in cmd
                 assert SCIP_LOCAL_IMAGE in cmd
-                assert "/test/repo:/workspace" in " ".join(cmd)
+                assert "--mount" in cmd
+                assert "type=bind" in " ".join(cmd)
                 assert "Docker" in desc
 
-    def test_respects_scip_local_env(self):
+    def test_respects_scip_local_env(self, tmp_path):
         """Skips Docker when SCIP_LOCAL=1."""
         from main import _get_scip_cmd
 
         with mock.patch("main._ensure_docker_image") as mock_ensure:
             with mock.patch.dict(os.environ, {"SCIP_LOCAL": "1"}):
-                cmd, desc = _get_scip_cmd("/test/repo")
+                cmd, desc = _get_scip_cmd(str(tmp_path))
                 # Should not have called _ensure_docker_image
                 mock_ensure.assert_not_called()
                 # Result depends on whether local binary/script exists
                 # but should NOT be docker
                 assert "docker" not in cmd or "Docker" not in desc or mock_ensure.called is False
+
+    def test_invalid_directory_raises(self):
+        """Raises ValueError for non-existent directory."""
+        from main import _get_scip_cmd
+
+        with pytest.raises(ValueError, match="does not exist"):
+            _get_scip_cmd("/nonexistent/path")
 
 
 class TestRegistryConfig:
