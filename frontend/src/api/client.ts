@@ -3,8 +3,9 @@
 // Doc: Natural_Language_Code/research_agent/info_map_editor.md
 // Doc: Natural_Language_Code/ticket_generation/info_ticket_generation.md
 
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
+import { save, open } from "@tauri-apps/plugin-dialog";
+import { writeTextFile, mkdir } from "@tauri-apps/plugin-fs";
+import { buildLlmContextFiles } from "../export/llmContext";
 import type {
   MapData,
   ChangeRecordsResponse,
@@ -240,6 +241,26 @@ export async function exportMapAsFile(): Promise<void> {
   });
   if (filePath) {
     await writeTextFile(filePath, content);
+  }
+}
+
+export async function exportLlmContext(): Promise<void> {
+  const mapData = await fetchMap();
+  const files = buildLlmContextFiles(mapData);
+
+  const dirPath = await open({
+    title: "Select folder for LLM Context export",
+    directory: true,
+    canCreateDirectories: true,
+  });
+
+  if (!dirPath) return;
+
+  const contextDir = `${dirPath}/LLM_Context`;
+  await mkdir(contextDir, { recursive: true });
+
+  for (const [filename, content] of files) {
+    await writeTextFile(`${contextDir}/${filename}`, content);
   }
 }
 

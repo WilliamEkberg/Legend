@@ -9,7 +9,15 @@
     "core:default",
     "dialog:default",
     "dialog:allow-save",
+    "dialog:allow-open",
     "fs:default",
-    "fs:allow-write-text-file"
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "$HOME/**" }]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "$HOME/**" }]
+    }
   ]
 }

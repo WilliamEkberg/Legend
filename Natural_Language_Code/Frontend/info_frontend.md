@@ -434,6 +434,14 @@ Replaces single global d3-force simulation with per-module simulations for bette
 - [x] Add Chat toggle button to MapView header bar
 - [x] Integrate ChatPanel into MapView with node navigation (clickable node references → fitView + select) and map refresh on confirmed edits
 
+### Export LLM Context
+
+- [x] Create `frontend/src/export/llmContext.ts` — pure markdown generation from MapData (buildModuleMd, buildTableOfContents, buildLlmContextFiles)
+- [x] Add `exportLlmContext()` to `client.ts` — directory picker via `open()`, create `LLM_Context/` folder, write markdown files
+- [x] Add "Export LLM Context" button to `MapSidebar.tsx` below "Export Map JSON"
+- [x] Wire button in `MapView.tsx` with state + handler
+- [x] Add `dialog:allow-open` and `fs:allow-mkdir` permissions to Tauri capabilities
+
 ---
 
 ## Log
@@ -462,3 +470,4 @@ Replaces single global d3-force simulation with per-module simulations for bette
 - 2026-02-20 :: william :: Performance fixes + Tauri download fix. (1) Reduced box-shadow blur from 200px/80px to 15px/6px on .has-changes and .has-revalidation nodes in graph.css — WKWebView was GPU-thrashing on large blurs. (2) Stopped infinite CSS handle-pulse animation on all 8 handles per node (moved to :hover only). (3) Added React.memo() to MapNode, AnimatedEdge, GroupNode to prevent unnecessary re-renders. (4) Fixed Tauri file download: blob URL downloads don't work in WKWebView, replaced with Tauri dialog+fs plugins (save dialog + writeTextFile) for both ticket download and map export. Added tauri-plugin-dialog and tauri-plugin-fs to Cargo.toml, lib.rs, capabilities. (5) Reduced d3-force ticks: autoLayout 400→200, mapTransform 300→150. (6) Raised ReactFlow minZoom from 0.001 to 0.1. (7) Tuned framer-motion springs: damping 25-28→40, stiffness 300→200 for faster settling in DetailPanel, TicketPanel, VersionPanel.
 - 2026-02-28 :: william :: Frontend theme overhaul: migrated from plain CSS to Tailwind CSS + shadcn/ui. Adopted Context viewer design system with dual light/dark themes (warm cream/forest green light, deep forest/bright green dark). Added next-themes toggle, sonner toasts, lucide-react icons. Replaced App.css and graph.css (~1800 lines) with Tailwind utility classes across all 11 graph components + launcher. New files: tailwind.config.ts, postcss.config.js, components.json, lib/utils.ts, ThemeToggle.tsx, 16 shadcn/ui components. Fonts: Inter (UI), Lora (headings), Space Mono (code). All component logic unchanged.
 - 2026-03-02 :: william :: Added MCP chat sidebar to map view. New ChatPanel.tsx: 420px right sidebar with ask/edit mode toggle, streaming SSE messages with react-markdown rendering, tool call badges, ProposedChange cards (apply/reject per-change + apply/reject all), node reference links (clickable → fitView + select node on map). Types: ChatMessage, ChatMode, ProposedChange, ChatEvent. API: sendChatMessage() (SSE streaming), confirmChatChanges(), clearChatSession(). MapView: Chat toggle button in header, ChatPanel rendering with onNodeSelect (navigates to node) and onMapMutated (refreshes map + change records). Dependency: react-markdown.
+- 2026-03-04 :: william :: Added Export LLM Context feature. New `frontend/src/export/llmContext.ts`: pure TypeScript markdown generation from MapData — buildLlmContextFiles() produces one .md per module (with overview table, directories, dependencies, decisions, components as sub-headers with file paths) plus Table_of_content.md (module listing table + dependency graph). API: exportLlmContext() in client.ts uses Tauri open() directory picker + mkdir + writeTextFile to save LLM_Context/ folder. UI: "Export LLM Context" button in MapSidebar below "Export Map JSON". Tauri: added dialog:allow-open and fs:allow-mkdir permissions.
