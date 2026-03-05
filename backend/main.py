@@ -221,6 +221,9 @@ def ingest_l2_output(conn, json_path: str, run_id: int) -> None:
         )
 
         directories = entry.get("directories", [])
+        # Strip "codebase/" prefix — opencode sees the repo through a
+        # ./codebase symlink, but SCIP indexes real paths without it.
+        directories = [d.removeprefix("codebase/") for d in directories]
         if directories:
             db.add_module_directories(conn, module_id, directories)
 
@@ -321,6 +324,9 @@ def ingest_l2_modules(conn, json_path: str, run_id: int) -> dict:
             run_id=run_id,
         )
         directories = entry.get("directories", [])
+        # Strip "codebase/" prefix — opencode sees the repo through a
+        # ./codebase symlink, but SCIP indexes real paths without it.
+        directories = [d.removeprefix("codebase/") for d in directories]
         if directories:
             db.add_module_directories(conn, module_id, directories)
         id_map[entry["id"]] = module_id
