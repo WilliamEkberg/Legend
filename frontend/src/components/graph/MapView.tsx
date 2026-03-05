@@ -439,6 +439,24 @@ function MapViewInner() {
     }
   }, [level, l3Available]);
 
+  // Double-click L2 module → drill into L3 components for that module
+  const onNodeDoubleClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      if (level !== "L2" || node.type === "group") return;
+      if (!("moduleType" in node.data)) return;
+
+      setLevel("L3");
+      // After React re-renders the L3 graph, zoom to this module's group node
+      const groupId = node.id.replace("module-", "group-module-");
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          fitView({ nodes: [{ id: groupId }], duration: 500, padding: 0.3 });
+        }, 100);
+      });
+    },
+    [level, fitView],
+  );
+
   // Node click handler
   const onNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
@@ -620,6 +638,7 @@ function MapViewInner() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={onNodeClick}
+            onNodeDoubleClick={onNodeDoubleClick}
             onConnect={onConnect}
             isValidConnection={isValidConnection}
             connectionRadius={20}
