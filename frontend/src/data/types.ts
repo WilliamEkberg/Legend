@@ -8,6 +8,7 @@ export interface MapDecision {
   id: number;
   category: string;
   text: string;
+  detail?: string | null;
   source: string;
 }
 

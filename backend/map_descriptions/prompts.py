@@ -32,13 +32,23 @@ Categories (use exactly these strings):
 - error_handling   — Failure modes, error strategies, retry/fallback behavior
 - data_flow        — What data enters, what transformations happen, what leaves
 
+Each decision has two parts:
+- "text": A SHORT label (max ~10 words) that gives intuition about what this decision covers. Think of it as a heading you'd scan in a list.
+- "detail": The actual technical substance — concrete, falsifiable, specific. This is where the real information goes: what exactly the code does, specific function names, patterns, constraints, and trade-offs.
+
 Examples of good decisions:
-- (api_contracts)   "Exposes authenticate(token) -> User | Error as the sole public interface"
-- (patterns)        "Uses the Repository pattern to abstract all database access behind an interface"
-- (libraries)       "Uses jsonwebtoken for token parsing and validation"
-- (boundaries)      "Delegates user lookup to the users component — never queries the database directly"
-- (error_handling)  "Returns 401 for expired tokens and 403 for insufficient permissions; no retry"
-- (data_flow)       "Accepts raw HTTP request body, validates JWT payload, returns typed User object"
+- (api_contracts)   text: "Single public auth entry point"
+                    detail: "Exposes authenticate(token) -> User | Error as the sole interface; all auth checks funnel through this single entry point, called per-request by middleware with the raw Bearer token"
+- (patterns)        text: "Repository pattern for DB access"
+                    detail: "All database queries go through a Repository interface; no component accesses the DB directly"
+- (libraries)       text: "jsonwebtoken for token handling"
+                    detail: "Chose over jose for simpler API; only HS256 and RS256 algorithms are allowed; tokens parsed and validated in a single call"
+- (boundaries)      text: "Delegates user lookup externally"
+                    detail: "Never queries the users database directly; all user resolution goes through the users component's public API"
+- (error_handling)  text: "HTTP 401/403 error strategy"
+                    detail: "Returns 401 for expired tokens with WWW-Authenticate header (error=invalid_token) for client-side refresh flows; 403 for insufficient permissions; no retry logic"
+- (data_flow)       text: "HTTP body → JWT → typed User"
+                    detail: "Accepts raw HTTP request body, validates JWT payload structure and signature, returns typed User object; rejects malformed tokens before signature check"
 
 Examples of decisions to SKIP:
 - "Written in TypeScript" (language is a module-level fact, not a component decision)
@@ -46,12 +56,13 @@ Examples of decisions to SKIP:
 - "Imports React" (obvious from the technology stack)
 
 Rules:
+- "text" MUST be short (max ~10 words) — it is a scannable label, not the decision itself
+- "detail" carries the real substance — be specific, name functions, patterns, constraints
 - Every statement must be traceable to actual code in the files provided
 - Do not invent decisions that are not in the code
 - Only include a decision if it represents a choice where a reasonable alternative existed. Skip facts that are trivially obvious from the technology stack.
 - Not every category applies to every component. Only use categories where the component makes a notable decision.
 - Extract 2–8 decisions (fewer for small components, more for complex ones)
-- Each decision must be a single, self-contained falsifiable statement
 
 Source files:
 {file_contents}
@@ -59,7 +70,7 @@ Source files:
 Respond with JSON only:
 {{
   "decisions": [
-    {{"category": "<category>", "text": "<falsifiable statement>"}}
+    {{"category": "<category>", "text": "<concise one-sentence summary>", "detail": "<optional deeper context or null>"}}
   ]
 }}"""
 
@@ -89,9 +100,11 @@ Find decisions that appear in similar form across more than 50% of the listed co
 These are cross-cutting patterns that should be elevated to module level.
 
 Rules:
+- "text" MUST be short (max ~10 words) — a scannable label for the cross-cutting pattern
+- "detail" carries the substance — what the pattern is, which components share it, specifics
 - Only elevate decisions shared across the MAJORITY of components (>50%)
 - Do NOT elevate conflicting decisions (e.g. one component uses Zod, another uses Joi) — keep those at component level
-- Return the merged statement text and the exact IDs of all source decisions to delete
+- Return the merged statement and the exact IDs of all source decisions to delete
 - If no cross-cutting patterns exist, return an empty list
 
 Component decisions (each decision shows [id] (category) text):
@@ -101,7 +114,8 @@ Respond with JSON only:
 {{
   "elevated": [
     {{
-      "text": "<cross-cutting decision statement>",
+      "text": "<concise one-sentence summary>",
+      "detail": "<optional deeper context or null>",
       "source_decision_ids": [<id>, <id>, ...]
     }}
   ]
@@ -142,8 +156,9 @@ Extract deployment-level decisions covering:
 - Build and deployment (how is it built and deployed?)
 
 Rules:
+- "text" MUST be short (max ~10 words) — a scannable label for the deployment decision
+- "detail" carries the substance — specific config values, file paths, environment details
 - Only include decisions traceable to the configuration files provided
-- Each decision must be a single, falsifiable statement
 - Do not repeat decisions already captured at the component level
 
 Configuration files:
@@ -152,6 +167,6 @@ Configuration files:
 Respond with JSON only:
 {{
   "decisions": [
-    {{"category": "deployment", "text": "<deployment decision statement>"}}
+    {{"category": "deployment", "text": "<concise one-sentence summary>", "detail": "<optional deeper context or null>"}}
   ]
 }}"""

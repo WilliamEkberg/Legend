@@ -555,6 +555,7 @@ async def import_map(request: Request):
 class DecisionUpdate(BaseModel):
     text: str | None = None
     category: str | None = None
+    detail: str | None = None
 
 
 class DecisionCreate(BaseModel):
@@ -562,6 +563,7 @@ class DecisionCreate(BaseModel):
     category: str
     module_id: int | None = None
     component_id: int | None = None
+    detail: str | None = None
 
 
 def _current_baseline_id(conn) -> int | None:
@@ -600,6 +602,8 @@ async def patch_decision(decision_id: int, body: DecisionUpdate):
             updates["text"] = body.text
         if body.category is not None:
             updates["category"] = body.category
+        if body.detail is not None:
+            updates["detail"] = body.detail
         db.update_decision(conn, decision_id, **updates)
 
         mid, cid = _resolve_decision_context(conn, old)
@@ -635,6 +639,7 @@ async def create_decision(body: DecisionCreate):
             module_id=body.module_id,
             component_id=body.component_id,
             source="human",
+            detail=body.detail,
         )
         if new_id is None:
             raise HTTPException(status_code=500, detail="Insert returned no ID")

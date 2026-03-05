@@ -8,6 +8,11 @@ import type {
   MapEdgeRaw,
 } from "../data/types";
 
+/** Replace pipe separators with commas for safe markdown table cells. */
+function escapeForTable(value: string): string {
+  return value.replace(/\s*\|\s*/g, ", ");
+}
+
 /** Sanitize a module name into a valid filename (no extension). */
 function toFileName(name: string): string {
   return name
@@ -35,6 +40,9 @@ function renderDecisions(
     lines.push(`${headingPrefix} ${category}`);
     for (const d of items) {
       lines.push(`- ${d.text} *(source: ${d.source})*`);
+      if (d.detail) {
+        lines.push(`  > ${d.detail}`);
+      }
     }
     lines.push("");
   }
@@ -86,7 +94,7 @@ export function buildModuleMd(
   lines.push("|----------|-------|");
   lines.push(`| Classification | ${module.classification} |`);
   lines.push(`| Type | ${module.type} |`);
-  lines.push(`| Technology | ${module.technology} |`);
+  lines.push(`| Technology | ${escapeForTable(module.technology)} |`);
   lines.push(`| Deployment Target | ${module.deployment_target} |`);
   lines.push(`| Source Origin | ${module.source_origin} |`);
   lines.push("");
@@ -176,7 +184,7 @@ export function buildTableOfContents(
   for (const mod of modules) {
     const fname = fileNameMap.get(mod.id) ?? "unknown.md";
     lines.push(
-      `| ${mod.name} | ${mod.classification} | ${mod.technology} | ${mod.components.length} | [${fname}](./${fname}) |`,
+      `| ${mod.name} | ${mod.classification} | ${escapeForTable(mod.technology)} | ${mod.components.length} | [${fname}](./${fname}) |`,
     );
   }
   lines.push("");

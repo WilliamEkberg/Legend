@@ -145,8 +145,9 @@ WRITE_TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "Decision text"},
+                "text": {"type": "string", "description": "Decision text (concise one-sentence summary)"},
                 "category": {"type": "string", "description": "Category: api_contracts, patterns, libraries, boundaries, error_handling, data_flow, deployment, cross_cutting"},
+                "detail": {"type": "string", "description": "Optional deeper context for the decision"},
                 "module_id": {"type": "integer", "description": "Attach to this module (mutually exclusive with component_id)"},
                 "component_id": {"type": "integer", "description": "Attach to this component (mutually exclusive with module_id)"},
             },
@@ -162,6 +163,7 @@ WRITE_TOOLS = [
                 "decision_id": {"type": "integer", "description": "Decision ID"},
                 "text": {"type": "string", "description": "New text"},
                 "category": {"type": "string", "description": "New category"},
+                "detail": {"type": "string", "description": "New detail context"},
             },
             "required": ["decision_id"],
         },
@@ -387,17 +389,17 @@ def _add_component(module_id: int, name: str, purpose: str | None = None) -> dic
         db.close(conn)
 
 
-def _add_decision(text: str, category: str, module_id: int | None = None, component_id: int | None = None) -> dict:
+def _add_decision(text: str, category: str, module_id: int | None = None, component_id: int | None = None, detail: str | None = None) -> dict:
     conn = _conn()
     try:
-        did = db.add_decision(conn, category=category, text=text, module_id=module_id, component_id=component_id, source="chat")
+        did = db.add_decision(conn, category=category, text=text, module_id=module_id, component_id=component_id, source="chat", detail=detail)
         db.add_change_record(conn, entity_type="decision", entity_id=did, action="add", old_value=None, new_value=json.dumps({"category": category, "text": text}), origin="chat", module_id=module_id, component_id=component_id)
         return {"id": did}
     finally:
         db.close(conn)
 
 
-def _update_decision(decision_id: int, text: str | None = None, category: str | None = None) -> dict:
+def _update_decision(decision_id: int, text: str | None = None, category: str | None = None, detail: str | None = None) -> dict:
     conn = _conn()
     try:
         old = db.get_decision(conn, decision_id)
@@ -408,6 +410,8 @@ def _update_decision(decision_id: int, text: str | None = None, category: str | 
             updates["text"] = text
         if category is not None:
             updates["category"] = category
+        if detail is not None:
+            updates["detail"] = detail
         if updates:
             updates["source"] = "chat"
             db.update_decision(conn, decision_id, **updates)
@@ -492,8 +496,8 @@ TOOL_DISPATCH = {
     "get_statistics": lambda args: _get_statistics(),
     "add_module": lambda args: _add_module(args["name"], args.get("classification", "module"), args.get("type"), args.get("technology")),
     "add_component": lambda args: _add_component(args["module_id"], args["name"], args.get("purpose")),
-    "add_decision": lambda args: _add_decision(args["text"], args["category"], args.get("module_id"), args.get("component_id")),
-    "update_decision": lambda args: _update_decision(args["decision_id"], args.get("text"), args.get("category")),
+    "add_decision": lambda args: _add_decision(args["text"], args["category"], args.get("module_id"), args.get("component_id"), args.get("detail")),
+    "update_decision": lambda args: _update_decision(args["decision_id"], args.get("text"), args.get("category"), args.get("detail")),
     "delete_decision": lambda args: _delete_decision(args["decision_id"]),
     "add_module_edge": lambda args: _add_module_edge(args["source_id"], args["target_id"], args["edge_type"], args.get("label")),
     "add_component_edge": lambda args: _add_component_edge(args["source_id"], args["target_id"], args["edge_type"], args.get("label")),

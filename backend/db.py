@@ -328,13 +328,14 @@ def add_decision(
     component_id: int | None = None,
     source: str = "pipeline_generated",
     run_id: int | None = None,
+    detail: str | None = None,
 ) -> int:
     """Insert a decision (must have module_id XOR component_id). Return its ID."""
     cur = conn.execute(
         """INSERT INTO decisions
-           (module_id, component_id, category, text, source, pipeline_run_id)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (module_id, component_id, category, text, source, run_id),
+           (module_id, component_id, category, text, detail, source, pipeline_run_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (module_id, component_id, category, text, detail, source, run_id),
     )
     conn.commit()
     return cur.lastrowid
@@ -909,7 +910,7 @@ def export_full_map(conn: sqlite3.Connection) -> dict:
 
         # Module-level decisions
         mod_decisions = conn.execute(
-            "SELECT id, category, text, source FROM decisions WHERE module_id = ?",
+            "SELECT id, category, text, detail, source FROM decisions WHERE module_id = ?",
             (mod_id,),
         ).fetchall()
         mod_dict["decisions"] = [dict(r) for r in mod_decisions]
@@ -933,7 +934,7 @@ def export_full_map(conn: sqlite3.Connection) -> dict:
 
             # Component-level decisions
             comp_decisions = conn.execute(
-                "SELECT id, category, text, source FROM decisions WHERE component_id = ?",
+                "SELECT id, category, text, detail, source FROM decisions WHERE component_id = ?",
                 (comp_id,),
             ).fetchall()
             comp_dict["decisions"] = [dict(r) for r in comp_decisions]
@@ -1017,6 +1018,7 @@ def import_full_map(conn: sqlite3.Connection, data: dict) -> dict:
                 text=dec["text"],
                 module_id=new_mod_id,
                 source=dec.get("source", "pipeline_generated"),
+                detail=dec.get("detail"),
             )
             decision_count += 1
 
@@ -1047,6 +1049,7 @@ def import_full_map(conn: sqlite3.Connection, data: dict) -> dict:
                     text=dec["text"],
                     component_id=new_comp_id,
                     source=dec.get("source", "pipeline_generated"),
+                    detail=dec.get("detail"),
                 )
                 decision_count += 1
 
@@ -1165,6 +1168,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     component_id    INTEGER REFERENCES components(id) ON DELETE CASCADE,
     category        TEXT NOT NULL,
     text            TEXT NOT NULL,
+    detail          TEXT,
     source          TEXT NOT NULL DEFAULT 'pipeline_generated',
     pipeline_run_id INTEGER REFERENCES pipeline_runs(id),
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),

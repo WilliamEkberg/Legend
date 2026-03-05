@@ -99,6 +99,7 @@ def describe_all_components(
             db.add_decision(
                 conn, d["category"], d["text"],
                 component_id=component_id, run_id=run_id,
+                detail=d.get("detail"),
             )
             total += 1
 
@@ -120,7 +121,7 @@ def describe_component(
 
     component_id, decisions = _describe_component_worker(component, file_paths, source_dir, client)
     for d in decisions:
-        db.add_decision(conn, d["category"], d["text"], component_id=component_id, run_id=run_id)
+        db.add_decision(conn, d["category"], d["text"], component_id=component_id, run_id=run_id, detail=d.get("detail"))
     print(f"  [Part 3]   {component['name']}: {len(decisions)} decisions written")
 
 
@@ -156,7 +157,7 @@ def _describe_component_worker(
         else (all_decisions[0] if all_decisions else [])
     )
     valid = [
-        {**d, "text": d["text"].strip()}
+        {**d, "text": d["text"].strip(), "detail": (d.get("detail") or "").strip() or None}
         for d in raw
         if d.get("category") in VALID_CATEGORIES and d.get("text", "").strip()
     ]

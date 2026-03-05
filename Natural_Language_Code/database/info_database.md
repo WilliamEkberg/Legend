@@ -140,7 +140,8 @@ CREATE TABLE decisions (
     component_id    INTEGER REFERENCES components(id) ON DELETE CASCADE,
     category        TEXT NOT NULL,       -- 'api_contracts', 'patterns', 'libraries', 'boundaries',
                                          -- 'error_handling', 'data_flow', 'deployment', 'cross_cutting'
-    text            TEXT NOT NULL,        -- The decision statement (falsifiable, specific)
+    text            TEXT NOT NULL,        -- Concise one-sentence decision summary
+    detail          TEXT,                 -- Optional deeper context (why, how, alternatives)
     source          TEXT NOT NULL DEFAULT 'pipeline_generated',  -- 'pipeline_generated' or 'human'
     pipeline_run_id INTEGER REFERENCES pipeline_runs(id),
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -388,12 +389,12 @@ export_full_map()  -- returns nested dict for frontend consumption
       "id": 1, "name": "...", "classification": "module", "type": "...",
       "technology": "...", "source_origin": "...", "deployment_target": "...",
       "directories": ["..."],
-      "decisions": [{"id": 1, "category": "...", "text": "...", "source": "..."}],
+      "decisions": [{"id": 1, "category": "...", "text": "...", "detail": "...", "source": "..."}],
       "components": [
         {
           "id": 1, "name": "...", "purpose": "...", "confidence": 0.9,
           "files": [{"path": "...", "is_test": false}],
-          "decisions": [{"id": 2, "category": "...", "text": "...", "source": "..."}]
+          "decisions": [{"id": 2, "category": "...", "text": "...", "detail": null, "source": "..."}]
         }
       ]
     }
@@ -482,3 +483,4 @@ export_full_map()  -- returns nested dict for frontend consumption
 - 2026-02-18 :: william :: Doc sync: Fixed component_edges UNIQUE constraint to match code (source_id, target_id) instead of (source_id, target_id, edge_type). Updated edge_type comment to 'depends-on'. Added get_module_directories() and get_decision() to Python Module Interface (were implemented but undocumented).
 - 2026-02-18 :: william :: Added backend test suite (backend/tests/). test_db.py covers all CRUD operations (53 tests), test_db_export.py covers export_full_map() nested output (14 tests). In-memory SQLite used for fast, isolated tests.
 - 2026-02-19 :: william :: Added `import_full_map(conn, data)` to db.py. Accepts `export_full_map()` output format, clears existing data, rebuilds with ID remapping (old→new for modules, components), inserts decisions with proper FK remapping, serializes edge metadata dicts back to JSON strings. Returns summary dict with counts. Added `POST /api/map/import` endpoint to main.py.
+- 2026-03-05 :: william :: Added `detail TEXT` nullable column to decisions table. `text` is now a concise one-liner, `detail` holds optional deeper context. Updated `add_decision()`, `export_full_map()`, and `import_full_map()` to handle the new column.

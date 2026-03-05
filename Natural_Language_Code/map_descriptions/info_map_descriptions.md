@@ -60,22 +60,24 @@ component_files — component_id, path, is_test
 
 **Output (written to DB):**
 ```
-decisions       — id, module_id|component_id, category, text, source, pipeline_run_id
+decisions       — id, module_id|component_id, category, text, detail, source, pipeline_run_id
 ```
+
+`text` is a concise one-sentence summary. `detail` is optional deeper context (nullable).
 
 **Intermediate structures:**
 ```
 ComponentDecisionBatch {
     component_id:   int
     component_name: str
-    decisions:      list[{category: str, text: str}]
+    decisions:      list[{category: str, text: str, detail: str|null}]
 }
 
 ModuleElevationResult {
     module_id:          int
-    elevated_decisions: list[{category: 'cross_cutting', text: str}]
+    elevated_decisions: list[{category: 'cross_cutting', text: str, detail: str|null}]
     deleted_ids:        list[int]          -- component decision IDs to remove
-    deployment_decisions: list[{category: 'deployment', text: str}]
+    deployment_decisions: list[{category: 'deployment', text: str, detail: str|null}]
 }
 ```
 
@@ -87,8 +89,8 @@ Phase A — Component Descriptions
 For each component:
     DB: get_component_files(component_id, exclude_test=True)
     Disk: read source files
-    LLM: extract decisions (3-15 per component)
-    DB: add_decision(component_id=..., category, text)
+    LLM: extract decisions (3-15 per component, each with text + optional detail)
+    DB: add_decision(component_id=..., category, text, detail)
 
          │
          v
@@ -142,8 +144,8 @@ Orchestrates the full Part 3 run:
 - `get_decisions(conn, component_id=...)` — component decisions (for elevation input)
 
 **Write:**
-- `add_decision(conn, category, text, component_id=..., source='pipeline_generated', run_id=...)`
-- `add_decision(conn, category, text, module_id=..., source='pipeline_generated', run_id=...)`
+- `add_decision(conn, category, text, component_id=..., source='pipeline_generated', run_id=..., detail=...)`
+- `add_decision(conn, category, text, module_id=..., source='pipeline_generated', run_id=..., detail=...)`
 
 **Delete:**
 - `clear_decisions(conn, source='pipeline_generated')` — wipe pipeline decisions on re-run
@@ -197,6 +199,20 @@ Deletes specific decisions by their primary key. Used by the elevation step to r
 - [x] Update `DetailPanel.tsx` — inline editing, add/delete, green highlight for `human`
 - [x] Update `graph.css` — styles for edit textarea, save/cancel buttons, green highlight, add form
 
+### Decision Detail Field
+
+- [x] Add `detail TEXT` column to decisions table schema in `db.py`
+- [x] Update `add_decision()` to accept `detail` parameter
+- [x] Update `export_full_map()` SELECT queries to include `detail`
+- [x] Update `import_full_map()` to pass `detail` through
+- [x] Update all 3 LLM prompts to request `text` (one-liner) + `detail` (optional context)
+- [x] Update component_describer.py and module_describer.py parsers to extract and store `detail`
+- [x] Update API models (`DecisionCreate`, `DecisionUpdate`) and endpoints to support `detail`
+- [x] Update MCP server tools (add_decision, update_decision) to support `detail`
+- [x] Add `detail?: string` to `MapDecision` TypeScript type
+- [x] Update DetailPanel.tsx: display detail as dimmed sub-text, add detail textarea to edit/add forms
+- [x] Update LLM Context export to render detail as blockquote under each decision
+
 ---
 
 ## Log
@@ -208,3 +224,4 @@ Deletes specific decisions by their primary key. Used by the elevation step to r
 - 2026-02-16 :: william :: Bug fix — decision endpoints now raise HTTPException instead of returning {"id": null} on DB not found; DetailPanel add/edit/delete handlers now catch errors and display them inline
 - 2026-02-17 :: william :: Migrated llm_client.py from anthropic SDK to litellm. Removed _strip_provider_prefix from pipeline.py — litellm accepts full provider/model strings directly.
 - 2026-02-18 :: william :: Doc sync: Changed source='user_edited' to source='human' throughout to match actual implementation in main.py.
+- 2026-03-05 :: william :: Added `detail` column to decisions. `text` is now a short ~10 word scannable label, `detail` carries the full technical substance. Prompts updated with examples enforcing short text + detailed detail. Updated DB schema, all 3 LLM prompts, pipeline parsers, API endpoints, MCP tools. Frontend: detail hidden behind expand/collapse toggle (▸/▾), edit via explicit button, auto-resizing textareas, removed source label display. LLM Context export renders detail as blockquote.
