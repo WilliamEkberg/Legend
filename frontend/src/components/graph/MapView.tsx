@@ -25,6 +25,7 @@ import {
   createModuleEdge,
   createComponentEdge,
   exportMapAsFile,
+  exportLlmContext,
   createManualVersion,
   CreditError,
 } from "../../api/client";
@@ -93,6 +94,7 @@ function MapViewInner() {
   const [showCreateNode, setShowCreateNode] = useState(false);
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportingLlmContext, setExportingLlmContext] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [loadingTickets, setLoadingTickets] = useState(false);
@@ -213,6 +215,17 @@ function MapViewInner() {
       alert(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setExporting(false);
+    }
+  }, []);
+
+  const handleExportLlmContext = useCallback(async () => {
+    setExportingLlmContext(true);
+    try {
+      await exportLlmContext();
+    } catch (e) {
+      alert(`LLM Context export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExportingLlmContext(false);
     }
   }, []);
 
@@ -572,6 +585,8 @@ function MapViewInner() {
         loadingTickets={loadingTickets}
         onExportMap={handleExportMap}
         exporting={exporting}
+        onExportLlmContext={handleExportLlmContext}
+        exportingLlmContext={exportingLlmContext}
         weightRange={weightRange}
         onBrowseVersions={() => setShowVersions(true)}
         onSaveSnapshot={handleSaveSnapshot}

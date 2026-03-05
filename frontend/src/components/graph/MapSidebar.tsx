@@ -22,6 +22,8 @@ interface MapSidebarProps {
   loadingTickets: boolean;
   onExportMap: () => void;
   exporting: boolean;
+  onExportLlmContext: () => void;
+  exportingLlmContext: boolean;
   weightRange: { min: number; max: number };
   onBrowseVersions: () => void;
   onSaveSnapshot: () => void;
@@ -45,6 +47,8 @@ export function MapSidebar({
   loadingTickets,
   onExportMap,
   exporting,
+  onExportLlmContext,
+  exportingLlmContext,
   weightRange,
   onBrowseVersions,
   onSaveSnapshot,
@@ -165,6 +169,16 @@ export function MapSidebar({
           title="Download the full architecture map as a JSON file"
         >
           {exporting ? "Exporting..." : "Export Map JSON"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full text-xs mt-1.5"
+          onClick={onExportLlmContext}
+          disabled={exportingLlmContext}
+          title="Export architecture map as LLM-friendly markdown files"
+        >
+          {exportingLlmContext ? "Exporting..." : "Export LLM Context"}
         </Button>
       </div>
 
