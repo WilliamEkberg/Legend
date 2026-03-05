@@ -29,18 +29,98 @@ def _conn(readonly: bool = False):
 
 
 # ---------------------------------------------------------------------------
+# Markdown formatting helpers (matches llmContext.ts export format)
+# ---------------------------------------------------------------------------
+
+def _render_decisions_md(decisions: list[dict], heading_prefix: str) -> str:
+    """Group decisions by category and render as markdown."""
+    if not decisions:
+        return ""
+    grouped: dict[str, list[dict]] = {}
+    for d in decisions:
+        cat = d.get("category") or "General"
+        grouped.setdefault(cat, []).append(d)
+
+    lines: list[str] = []
+    for category, items in grouped.items():
+        lines.append(f"{heading_prefix} {category}")
+        for d in items:
+            lines.append(f"- {d['text']} *(source: {d.get('source', 'unknown')})*")
+            detail = d.get("detail")
+            if detail:
+                for detail_line in detail.split("\n"):
+                    lines.append(f"  > {detail_line}")
+            lines.append("")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _render_component_md(comp: dict, files: list[dict], decisions: list[dict]) -> str:
+    """Render a single component as markdown (matches llmContext.ts renderComponent)."""
+    lines: list[str] = []
+    lines.append(f"### {comp.get('name', 'Unknown')}")
+    lines.append("")
+    purpose = comp.get("purpose") or "No purpose specified"
+    lines.append(f"**Purpose:** {purpose}")
+    lines.append("")
+
+    if files:
+        lines.append("**Files:**")
+        for f in files:
+            suffix = " *(test)*" if f.get("is_test") else ""
+            lines.append(f"- `{f['path']}`{suffix}")
+        lines.append("")
+
+    if decisions:
+        lines.append("**Decisions:**")
+        lines.append("")
+        lines.append(_render_decisions_md(decisions, "####"))
+
+    return "\n".join(lines)
+
+
+def _get_component_files_with_test(conn, component_id: int) -> list[dict]:
+    """Get component files with is_test flag from DB."""
+    rows = conn.execute(
+        "SELECT path, is_test FROM component_files WHERE component_id = ?",
+        (component_id,),
+    ).fetchall()
+    return [{"path": r["path"], "is_test": bool(r["is_test"])} for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Tool catalogue
 # ---------------------------------------------------------------------------
 
 READ_TOOLS = [
     Tool(
-        name="get_full_map",
-        description="Return the complete architecture map: all modules with their components, decisions, and all edges.",
+        name="get_map_overview",
+        description=(
+            "Get a structural overview of the architecture map. Returns all modules with "
+            "their directories, component/decision counts, and module dependency edges. "
+            "Use this FIRST to understand application boundaries and overall structure "
+            "before drilling into specific modules."
+        ),
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
         name="get_module",
-        description="Get a single module by ID, including its components, decisions, and directories.",
+        description=(
+            "Get a single module's metadata, directories, and module-level decisions. "
+            "Does NOT include components — use get_module_components for that."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"module_id": {"type": "integer", "description": "Module ID"}},
+            "required": ["module_id"],
+        },
+    ),
+    Tool(
+        name="get_module_components",
+        description=(
+            "Get all components in a module as formatted text. Each component includes "
+            "its purpose, file paths, and technical decisions grouped by category."
+        ),
         inputSchema={
             "type": "object",
             "properties": {"module_id": {"type": "integer", "description": "Module ID"}},
@@ -49,7 +129,10 @@ READ_TOOLS = [
     ),
     Tool(
         name="get_component",
-        description="Get a single component by ID, including its files and decisions.",
+        description=(
+            "Get a single component as formatted text with purpose, file paths, "
+            "and technical decisions grouped by category."
+        ),
         inputSchema={
             "type": "object",
             "properties": {"component_id": {"type": "integer", "description": "Component ID"}},
@@ -92,7 +175,7 @@ READ_TOOLS = [
     ),
     Tool(
         name="search_entities",
-        description="Search modules, components, and decisions by text query.",
+        description="Search modules, components, and decisions by text. Searches names, decision text, and decision detail.",
         inputSchema={
             "type": "object",
             "properties": {"query": {"type": "string", "description": "Search text"}},
@@ -102,11 +185,6 @@ READ_TOOLS = [
     Tool(
         name="get_change_records",
         description="Get pending change records since the last baseline.",
-        inputSchema={"type": "object", "properties": {}, "required": []},
-    ),
-    Tool(
-        name="get_statistics",
-        description="Get summary statistics: counts of modules, components, decisions, and edges.",
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
 ]
@@ -238,10 +316,60 @@ WRITE_TOOL_NAMES = {t.name for t in WRITE_TOOLS}
 # Tool implementations
 # ---------------------------------------------------------------------------
 
-def _get_full_map() -> dict:
+def _get_map_overview() -> dict:
     conn = _conn(readonly=True)
     try:
-        return db.export_full_map(conn)
+        modules_raw = db.get_modules(conn)
+        modules_out = []
+        for mod in modules_raw:
+            mid = mod["id"]
+            dirs = db.get_module_directories(conn, mid)
+            comp_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM components WHERE module_id = ?", (mid,)
+            ).fetchone()["c"]
+            dec_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM decisions WHERE module_id = ?", (mid,)
+            ).fetchone()["c"]
+            modules_out.append({
+                "id": mid,
+                "name": mod["name"],
+                "classification": mod.get("classification"),
+                "technology": mod.get("technology"),
+                "type": mod.get("type"),
+                "directories": dirs,
+                "component_count": comp_count,
+                "decision_count": dec_count,
+            })
+
+        edges_raw = db.get_module_edges(conn)
+        mod_names = {m["id"]: m["name"] for m in modules_raw}
+        edges_summary = [
+            {
+                "source": mod_names.get(e["source_id"], f"?{e['source_id']}"),
+                "target": mod_names.get(e["target_id"], f"?{e['target_id']}"),
+                "edge_type": e.get("edge_type"),
+            }
+            for e in edges_raw
+        ]
+
+        total_components = conn.execute("SELECT COUNT(*) AS c FROM components").fetchone()["c"]
+        total_decisions = conn.execute("SELECT COUNT(*) AS c FROM decisions").fetchone()["c"]
+
+        class_rows = conn.execute(
+            "SELECT classification, COUNT(*) AS c FROM modules GROUP BY classification"
+        ).fetchall()
+        by_classification = {r["classification"]: r["c"] for r in class_rows}
+
+        return {
+            "modules": modules_out,
+            "module_edges": edges_summary,
+            "totals": {
+                "modules": len(modules_out),
+                "components": total_components,
+                "decisions": total_decisions,
+                "by_classification": by_classification,
+            },
+        }
     finally:
         db.close(conn)
 
@@ -254,30 +382,44 @@ def _get_module(module_id: int) -> dict:
             return {"error": f"Module {module_id} not found"}
         mod["directories"] = db.get_module_directories(conn, module_id)
         mod["decisions"] = db.get_decisions(conn, module_id=module_id)
-        mod["components"] = db.get_components(conn, module_id=module_id)
-        for comp in mod["components"]:
-            comp["files"] = [
-                {"path": p, "is_test": False}
-                for p in db.get_component_files(conn, comp["id"])
-            ]
-            comp["decisions"] = db.get_decisions(conn, component_id=comp["id"])
         return mod
     finally:
         db.close(conn)
 
 
-def _get_component(component_id: int) -> dict:
+def _get_module_components(module_id: int) -> str:
+    conn = _conn(readonly=True)
+    try:
+        mod = db.get_module(conn, module_id)
+        if not mod:
+            return json.dumps({"error": f"Module {module_id} not found"})
+
+        components = db.get_components(conn, module_id=module_id)
+        if not components:
+            return f"# {mod['name']} — Components\n\nNo components found."
+
+        lines = [f"# {mod['name']} — Components ({len(components)} total)", ""]
+        for comp in components:
+            files = _get_component_files_with_test(conn, comp["id"])
+            decisions = db.get_decisions(conn, component_id=comp["id"])
+            lines.append(_render_component_md(comp, files, decisions))
+            lines.append("---")
+            lines.append("")
+
+        return "\n".join(lines)
+    finally:
+        db.close(conn)
+
+
+def _get_component(component_id: int) -> str:
     conn = _conn(readonly=True)
     try:
         comp = db.get_component(conn, component_id)
         if not comp:
-            return {"error": f"Component {component_id} not found"}
-        comp["files"] = [
-            {"path": p, "is_test": False}
-            for p in db.get_component_files(conn, component_id)
-        ]
-        comp["decisions"] = db.get_decisions(conn, component_id=component_id)
-        return comp
+            return json.dumps({"error": f"Component {component_id} not found"})
+        files = _get_component_files_with_test(conn, component_id)
+        decisions = db.get_decisions(conn, component_id=component_id)
+        return _render_component_md(comp, files, decisions)
     finally:
         db.close(conn)
 
@@ -321,13 +463,13 @@ def _search_entities(query: str) -> dict:
             (q,),
         ).fetchall()
         decisions = conn.execute(
-            "SELECT d.id, d.category, d.text, d.module_id, d.component_id, "
+            "SELECT d.id, d.category, d.text, d.detail, d.module_id, d.component_id, "
             "COALESCE(m.name, '') AS module_name, COALESCE(c.name, '') AS component_name "
             "FROM decisions d "
             "LEFT JOIN modules m ON d.module_id = m.id "
             "LEFT JOIN components c ON d.component_id = c.id "
-            "WHERE d.text LIKE ?",
-            (q,),
+            "WHERE d.text LIKE ? OR d.detail LIKE ?",
+            (q, q),
         ).fetchall()
         return {
             "modules": [dict(r) for r in modules],
@@ -344,25 +486,6 @@ def _get_change_records() -> list:
         baseline = db.get_current_baseline(conn)
         baseline_id = baseline["id"] if baseline else None
         return db.get_change_records(conn, since_baseline_id=baseline_id)
-    finally:
-        db.close(conn)
-
-
-def _get_statistics() -> dict:
-    conn = _conn(readonly=True)
-    try:
-        modules = conn.execute("SELECT COUNT(*) AS c FROM modules").fetchone()["c"]
-        components = conn.execute("SELECT COUNT(*) AS c FROM components").fetchone()["c"]
-        decisions = conn.execute("SELECT COUNT(*) AS c FROM decisions").fetchone()["c"]
-        module_edges = conn.execute("SELECT COUNT(*) AS c FROM module_edges").fetchone()["c"]
-        component_edges = conn.execute("SELECT COUNT(*) AS c FROM component_edges").fetchone()["c"]
-        return {
-            "modules": modules,
-            "components": components,
-            "decisions": decisions,
-            "module_edges": module_edges,
-            "component_edges": component_edges,
-        }
     finally:
         db.close(conn)
 
@@ -485,15 +608,15 @@ def _delete_component(component_id: int) -> dict:
 # ---------------------------------------------------------------------------
 
 TOOL_DISPATCH = {
-    "get_full_map": lambda args: _get_full_map(),
+    "get_map_overview": lambda args: _get_map_overview(),
     "get_module": lambda args: _get_module(args["module_id"]),
+    "get_module_components": lambda args: _get_module_components(args["module_id"]),
     "get_component": lambda args: _get_component(args["component_id"]),
     "get_decisions": lambda args: _get_decisions(args.get("module_id"), args.get("component_id")),
     "get_module_edges": lambda args: _get_module_edges(args.get("source_id")),
     "get_component_edges": lambda args: _get_component_edges(args.get("source_id")),
     "search_entities": lambda args: _search_entities(args["query"]),
     "get_change_records": lambda args: _get_change_records(),
-    "get_statistics": lambda args: _get_statistics(),
     "add_module": lambda args: _add_module(args["name"], args.get("classification", "module"), args.get("type"), args.get("technology")),
     "add_component": lambda args: _add_component(args["module_id"], args["name"], args.get("purpose")),
     "add_decision": lambda args: _add_decision(args["text"], args["category"], args.get("module_id"), args.get("component_id"), args.get("detail")),
@@ -518,6 +641,8 @@ async def call_tool(name: str, arguments: dict):
         return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
     try:
         result = handler(arguments)
+        if isinstance(result, str):
+            return [TextContent(type="text", text=result)]
         return [TextContent(type="text", text=json.dumps(result, default=str))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
