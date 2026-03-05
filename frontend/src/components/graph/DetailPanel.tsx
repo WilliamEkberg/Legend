@@ -1,7 +1,6 @@
 // Doc: Natural_Language_Code/Frontend/info_frontend.md
 
 import { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import type { SelectedNode, MapDecision, MapModule, MapComponent, ChangeRecord, ValidationSummary, DecisionValidation } from "../../data/types";
 import { updateDecision, createDecision, deleteDecision, deleteModule, deleteComponent } from "../../api/client";
 import { Button } from "@/components/ui/button";
@@ -90,15 +89,11 @@ export function DetailPanel({ selected, onClose, onDecisionChange, changeRecords
     }
   }
 
+  if (!selected) return null;
+
   return (
-    <AnimatePresence>
-      {selected && (
-        <motion.div
-          className="absolute top-0 right-0 h-full w-96 bg-card border-l border-border shadow-xl z-20 flex flex-col"
-          initial={{ x: "100%" }}
-          animate={{ x: 0 }}
-          exit={{ x: "100%" }}
-          transition={{ type: "spring", damping: 40, stiffness: 200 }}
+        <div
+          className="h-full w-96 bg-card border-l border-border shadow-xl flex flex-col shrink-0"
         >
           <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
             <h2 className="text-lg font-semibold text-foreground truncate">
@@ -146,9 +141,7 @@ export function DetailPanel({ selected, onClose, onDecisionChange, changeRecords
               />
             )}
           </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        </div>
   );
 }
 
@@ -187,22 +180,36 @@ function DecisionsSection({
   onDecisionChange,
   onMutate,
 }: DecisionsSectionProps) {
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
+  const [editDetail, setEditDetail] = useState("");
   const [editCategory, setEditCategory] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [newText, setNewText] = useState("");
+  const [newDetail, setNewDetail] = useState("");
   const [newCategory, setNewCategory] = useState(DECISION_CATEGORIES[0]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editDetailRef = useRef<HTMLTextAreaElement>(null);
   const newTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const newDetailRef = useRef<HTMLTextAreaElement>(null);
 
-  // Focus textarea when editing starts
+  function autoResize(el: HTMLTextAreaElement) {
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }
+
+  // Focus textarea and auto-resize when editing starts
   useEffect(() => {
     if (editingId !== null && textareaRef.current) {
+      autoResize(textareaRef.current);
       textareaRef.current.focus();
       textareaRef.current.select();
+    }
+    if (editingId !== null && editDetailRef.current) {
+      autoResize(editDetailRef.current);
     }
   }, [editingId]);
 
@@ -215,12 +222,14 @@ function DecisionsSection({
   function startEdit(d: MapDecision) {
     setEditingId(d.id);
     setEditText(d.text);
+    setEditDetail(d.detail ?? "");
     setEditCategory(d.category);
   }
 
   function cancelEdit() {
     setEditingId(null);
     setEditText("");
+    setEditDetail("");
     setEditCategory("");
   }
 
@@ -229,10 +238,11 @@ function DecisionsSection({
     setSaving(true);
     setSaveError(null);
     try {
-      await updateDecision(d.id, { text: editText.trim(), category: editCategory });
+      const detailValue = editDetail.trim() || null;
+      await updateDecision(d.id, { text: editText.trim(), category: editCategory, detail: detailValue });
       const updated = decisions.map((x) =>
         x.id === d.id
-          ? { ...x, text: editText.trim(), category: editCategory, source: "human" }
+          ? { ...x, text: editText.trim(), detail: detailValue, category: editCategory, source: "human" }
           : x,
       );
       onDecisionChange(updated);
@@ -265,20 +275,23 @@ function DecisionsSection({
     setSaving(true);
     setSaveError(null);
     try {
+      const detailValue = newDetail.trim() || null;
       const body =
         entityType === "module"
-          ? { text: newText.trim(), category: newCategory, module_id: entityId }
-          : { text: newText.trim(), category: newCategory, component_id: entityId };
+          ? { text: newText.trim(), category: newCategory, module_id: entityId, detail: detailValue }
+          : { text: newText.trim(), category: newCategory, component_id: entityId, detail: detailValue };
       const { id } = await createDecision(body);
       const newDecision: MapDecision = {
         id,
         text: newText.trim(),
+        detail: detailValue,
         category: newCategory,
         source: "human",
       };
       onDecisionChange([...decisions, newDecision]);
       setAdding(false);
       setNewText("");
+      setNewDetail("");
       setNewCategory(DECISION_CATEGORIES[0]);
       onMutate();
     } catch (e) {
@@ -335,14 +348,27 @@ function DecisionsSection({
                     </select>
                     <textarea
                       ref={textareaRef}
-                      className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
+                      className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none overflow-hidden"
+                      placeholder="Decision summary (short label)"
                       value={editText}
-                      onChange={(e) => setEditText(e.target.value)}
+                      onChange={(e) => { setEditText(e.target.value); autoResize(e.target); }}
                       onKeyDown={(e) => {
                         if (e.key === "Escape") cancelEdit();
                         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveEdit(d);
                       }}
-                      rows={3}
+                      rows={1}
+                    />
+                    <textarea
+                      ref={editDetailRef}
+                      className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none overflow-hidden"
+                      placeholder="Detail (optional — deeper context)"
+                      value={editDetail}
+                      onChange={(e) => { setEditDetail(e.target.value); autoResize(e.target); }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") cancelEdit();
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) saveEdit(d);
+                      }}
+                      rows={1}
                     />
                     <div className="flex gap-2">
                       <Button
@@ -363,14 +389,36 @@ function DecisionsSection({
                     {validation?.status === "updated" && validation.old_text && (
                       <span className="text-xs text-muted-foreground line-through block mb-0.5">{validation.old_text}</span>
                     )}
-                    <span
-                      className="text-sm text-foreground cursor-pointer hover:text-primary transition-colors"
-                      onClick={() => startEdit(d)}
-                      title="Click to edit"
+                    <div
+                      className="flex items-start gap-2 cursor-pointer group"
+                      onClick={() => {
+                        if (d.detail) {
+                          setExpandedIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(d.id)) next.delete(d.id);
+                            else next.add(d.id);
+                            return next;
+                          });
+                        }
+                      }}
                     >
-                      {d.text}
-                    </span>
-                    <div className="flex items-center gap-2 mt-1">
+                      {d.detail ? (
+                        <span className="shrink-0 w-5 h-5 rounded flex items-center justify-center text-xs text-muted-foreground group-hover:text-foreground group-hover:bg-muted/60 transition-colors mt-0.5">
+                          {expandedIds.has(d.id) ? "▾" : "▸"}
+                        </span>
+                      ) : (
+                        <span className="shrink-0 w-5" />
+                      )}
+                      <span className="text-[13px] font-medium text-foreground leading-snug">{d.text}</span>
+                    </div>
+                    {d.detail && expandedIds.has(d.id) && (
+                      <ul className="text-sm text-black dark:text-white mt-2 p-3 bg-muted/40 rounded-md leading-relaxed space-y-2 list-none">
+                        {d.detail.split("\n").filter(Boolean).map((line, i) => (
+                          <li key={i}>{line}</li>
+                        ))}
+                      </ul>
+                    )}
+                    <div className="flex items-center gap-2 mt-1 ml-5.5">
                       {valInfo && (
                         <span
                           className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium", valInfo.cls)}
@@ -379,15 +427,20 @@ function DecisionsSection({
                           {valInfo.label}
                         </span>
                       )}
-                      {diffStyle ? (
+                      {diffStyle && (
                         <span className={cn("text-[10px] px-1.5 py-0.5 rounded font-bold", diffStyle.badgeCls)}>
                           {diffStyle.badge}
                         </span>
-                      ) : !valInfo ? (
-                        <span className="text-[10px] text-muted-foreground">{d.source}</span>
-                      ) : null}
+                      )}
                       <button
-                        className="text-[10px] text-destructive hover:text-destructive/80 ml-auto"
+                        className="text-[10px] text-muted-foreground hover:text-primary ml-auto"
+                        onClick={() => startEdit(d)}
+                        title="Edit decision"
+                      >
+                        edit
+                      </button>
+                      <button
+                        className="text-[10px] text-destructive hover:text-destructive/80"
                         onClick={() => handleDelete(d.id)}
                         title="Delete decision"
                       >
@@ -425,15 +478,27 @@ function DecisionsSection({
           </select>
           <textarea
             ref={newTextareaRef}
-            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
-            placeholder="Describe the technical decision..."
+            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none overflow-hidden"
+            placeholder="Decision summary (short label)"
             value={newText}
-            onChange={(e) => setNewText(e.target.value)}
+            onChange={(e) => { setNewText(e.target.value); autoResize(e.target); }}
             onKeyDown={(e) => {
               if (e.key === "Escape") setAdding(false);
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleAdd();
             }}
-            rows={3}
+            rows={1}
+          />
+          <textarea
+            ref={newDetailRef}
+            className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none overflow-hidden"
+            placeholder="Detail (optional — deeper context)"
+            value={newDetail}
+            onChange={(e) => { setNewDetail(e.target.value); autoResize(e.target); }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setAdding(false);
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleAdd();
+            }}
+            rows={1}
           />
           <div className="flex gap-2">
             <Button

@@ -73,15 +73,15 @@ legend.db
 
 | Tool | Params | Description |
 |------|--------|-------------|
-| `get_full_map` | — | Full map: modules, components, decisions, edges |
-| `get_module` | `module_id: int` | Single module with components + decisions + directories |
-| `get_component` | `component_id: int` | Single component with files + decisions |
+| `get_map_overview` | — | Structural overview: modules with directories, component/decision counts, dependency edges. Use first to understand application boundaries |
+| `get_module` | `module_id: int` | Single module metadata, directories, module-level decisions (no components) |
+| `get_module_components` | `module_id: int` | All components in a module as formatted text with purposes, file paths, decisions grouped by category |
+| `get_component` | `component_id: int` | Single component as formatted text with purpose, file paths, decisions |
 | `get_decisions` | `module_id?: int, component_id?: int` | Filtered decisions |
 | `get_module_edges` | `source_id?: int` | Module-level dependency edges |
 | `get_component_edges` | `source_id?: int` | Component-level dependency edges |
-| `search_entities` | `query: str` | Full-text search across module names, component names, decision text |
+| `search_entities` | `query: str` | Full-text search across module names, component names, decision text and detail |
 | `get_change_records` | — | Pending changes since last baseline |
-| `get_statistics` | — | Counts of modules, components, decisions, edges |
 
 **Write tools** (Edit mode only — intercepted for propose-then-confirm):
 
@@ -128,7 +128,7 @@ All write tools reuse existing CRUD functions from `db.py` and create change rec
 
 #### Frontend (ChatPanel)
 
-420px collapsible right sidebar on the map view. Uses the same styling patterns as DetailPanel (framer-motion slide, shadcn Button, Tailwind utilities).
+420px flex-based right sidebar on the map view (not absolutely positioned). Participates in the main flex layout as a sibling of DetailPanel — when both are open, DetailPanel appears first (left) and ChatPanel appears to its right, like Cursor's panel layout. Uses shadcn Button and Tailwind utilities.
 
 Features:
 - **Mode toggle**: Ask / Edit toggle in header (styled like the L2/L3 toggle)
@@ -203,3 +203,5 @@ Features:
 ## Log
 
 - 2026-03-02 :: william :: Created doc. Implemented full MCP chat feature: MCP server (mcp_server.py), chat orchestration (chat.py), 3 backend endpoints, ChatPanel frontend component with ask/edit modes, propose-then-confirm flow, streaming SSE, markdown rendering, node navigation. New dependencies: mcp>=1.0 (backend), react-markdown (frontend).
+- 2026-03-05 :: william :: Changed ChatPanel and DetailPanel from absolute-positioned overlays to flex-based layout siblings. Both panels now participate in the main flex row: [Sidebar][Map][DetailPanel?][ChatPanel?]. Removed framer-motion from both panels. When both are open they stack side-by-side like Cursor.
+- 2026-03-05 :: william :: Restructured MCP read tools for better LLM context. Removed get_full_map and get_statistics. Added get_map_overview (structural summary with dirs, counts, edges), get_module_components (formatted markdown matching LLM Context export). Slimmed get_module (no nested components). Changed get_component to return formatted markdown. Fixed search_entities to search decision detail field. Updated system prompt with application boundary guidance and recommended workflow.

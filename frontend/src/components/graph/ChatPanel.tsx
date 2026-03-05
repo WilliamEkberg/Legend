@@ -1,7 +1,6 @@
 // Doc: Natural_Language_Code/chat/info_chat.md
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage, ChatMode, ChatEvent, ProposedChange } from "../../data/types";
 import { sendChatMessage, confirmChatChanges, clearChatSession } from "../../api/client";
@@ -12,9 +11,10 @@ interface ChatPanelProps {
   onClose: () => void;
   onNodeSelect?: (nodeType: "module" | "component", id: number) => void;
   onMapMutated?: () => void;
+  initialMessage?: string;
 }
 
-export function ChatPanel({ onClose, onNodeSelect, onMapMutated }: ChatPanelProps) {
+export function ChatPanel({ onClose, onNodeSelect, onMapMutated, initialMessage }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [mode, setMode] = useState<ChatMode>("ask");
   const [input, setInput] = useState("");
@@ -47,8 +47,8 @@ export function ChatPanel({ onClose, onNodeSelect, onMapMutated }: ChatPanelProp
     }
   }, [input]);
 
-  const handleSend = useCallback(async () => {
-    const trimmed = input.trim();
+  const handleSend = useCallback(async (overrideText?: string) => {
+    const trimmed = (overrideText ?? input).trim();
     if (!trimmed || isStreaming) return;
     if (!apiKey) {
       setMessages((prev) => [
@@ -164,6 +164,15 @@ export function ChatPanel({ onClose, onNodeSelect, onMapMutated }: ChatPanelProp
       abortRef.current = null;
     }
   }, [input, isStreaming, apiKey, provider, model, mode, sessionId]);
+
+  // Auto-send initial message from chat bar
+  const initialMessageConsumed = useRef(false);
+  useEffect(() => {
+    if (initialMessage && !initialMessageConsumed.current) {
+      initialMessageConsumed.current = true;
+      handleSend(initialMessage);
+    }
+  }, [initialMessage, handleSend]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -292,12 +301,8 @@ export function ChatPanel({ onClose, onNodeSelect, onMapMutated }: ChatPanelProp
   };
 
   return (
-    <motion.div
-      className="absolute top-0 right-0 h-full w-[420px] bg-card border-l border-border shadow-xl z-30 flex flex-col"
-      initial={{ x: "100%" }}
-      animate={{ x: 0 }}
-      exit={{ x: "100%" }}
-      transition={{ type: "spring", damping: 40, stiffness: 200 }}
+    <div
+      className="h-full w-[420px] bg-card border-l border-border shadow-xl flex flex-col shrink-0"
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
@@ -470,7 +475,7 @@ export function ChatPanel({ onClose, onNodeSelect, onMapMutated }: ChatPanelProp
             <Button
               size="sm"
               className="h-9 px-3"
-              onClick={handleSend}
+              onClick={() => handleSend()}
               disabled={!input.trim()}
             >
               Send
@@ -481,7 +486,7 @@ export function ChatPanel({ onClose, onNodeSelect, onMapMutated }: ChatPanelProp
           Enter to send, Shift+Enter for new line
         </p>
       </div>
-    </motion.div>
+    </div>
   );
 }
 

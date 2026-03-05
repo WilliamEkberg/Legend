@@ -76,7 +76,7 @@ export async function runOpenCode(req: RunRequest): Promise<RunResponse> {
 
 export async function updateDecision(
   id: number,
-  updates: { text?: string; category?: string },
+  updates: { text?: string; category?: string; detail?: string | null },
 ): Promise<void> {
   const res = await fetch(`/api/decisions/${id}`, {
     method: "PATCH",
@@ -91,6 +91,7 @@ export async function createDecision(body: {
   category: string;
   module_id?: number;
   component_id?: number;
+  detail?: string | null;
 }): Promise<{ id: number }> {
   const res = await fetch("/api/decisions", {
     method: "POST",

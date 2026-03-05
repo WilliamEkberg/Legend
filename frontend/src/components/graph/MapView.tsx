@@ -24,7 +24,6 @@ import {
   fetchTickets,
   createModuleEdge,
   createComponentEdge,
-  exportMapAsFile,
   exportLlmContext,
   createManualVersion,
   CreditError,
@@ -42,10 +41,8 @@ import type {
 } from "../../data/types";
 import {
   transformMapData,
-  getEdgeTypes,
   defaultEdgeFilters,
   hasComponents,
-  getWeightRange,
 } from "../../data/mapTransform";
 import { MapNode } from "./MapNode";
 import { GroupNode } from "./GroupNode";
@@ -58,6 +55,7 @@ import { CreateNodeModal } from "./CreateNodeModal";
 import { EdgeLabelPopup } from "./EdgeLabelPopup";
 import { MapErrorBoundary } from "./MapErrorBoundary";
 import { ChatPanel } from "./ChatPanel";
+import { MapChatBar } from "./MapChatBar";
 import { ThemeToggle } from "../ThemeToggle";
 import { Button } from "@/components/ui/button";
 
@@ -93,12 +91,12 @@ function MapViewInner() {
   const [generating, setGenerating] = useState(false);
   const [showCreateNode, setShowCreateNode] = useState(false);
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
-  const [exporting, setExporting] = useState(false);
   const [exportingLlmContext, setExportingLlmContext] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
   const [savingSnapshot, setSavingSnapshot] = useState(false);
   const [loadingTickets, setLoadingTickets] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [chatInitialMessage, setChatInitialMessage] = useState<string | undefined>();
 
   const { fitView } = useReactFlow();
   const fitViewRef = useRef(fitView);
@@ -205,17 +203,6 @@ function MapViewInner() {
         setFilters(defaultEdgeFilters(data));
       })
       .catch(() => {/* silently ignore */});
-  }, []);
-
-  const handleExportMap = useCallback(async () => {
-    setExporting(true);
-    try {
-      await exportMapAsFile();
-    } catch (e) {
-      alert(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setExporting(false);
-    }
   }, []);
 
   const handleExportLlmContext = useCallback(async () => {
@@ -418,18 +405,6 @@ function MapViewInner() {
     });
   }, [edges, nodes, searchQuery, selectedNode]);
 
-  // Available edge types
-  const availableEdgeTypes = useMemo(
-    () => (mapData ? getEdgeTypes(mapData) : []),
-    [mapData]
-  );
-
-  // Dynamic weight range for slider
-  const weightRange = useMemo(
-    () => (mapData ? getWeightRange(mapData, level) : { min: 0, max: 1 }),
-    [mapData, level]
-  );
-
   const l3Available = mapData ? hasComponents(mapData) : false;
 
   // Reset to L2 if L3 selected but no components exist
@@ -553,10 +528,9 @@ function MapViewInner() {
               variant="outline"
               onClick={() => {
                 setError("");
-                setFilters(defaultEdgeFilters(mapData));
               }}
             >
-              Reset Filters &amp; Retry
+              Retry
             </Button>
           )}
           <Link to="/" className="text-sm text-primary hover:text-primary/80 mt-2">
@@ -590,9 +564,6 @@ function MapViewInner() {
         level={level}
         onLevelChange={setLevel}
         l3Available={l3Available}
-        edgeTypes={availableEdgeTypes}
-        filters={filters}
-        onFiltersChange={setFilters}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onFitView={handleFitView}
@@ -601,24 +572,28 @@ function MapViewInner() {
         generating={generating}
         onViewTickets={handleViewTickets}
         loadingTickets={loadingTickets}
-        onExportMap={handleExportMap}
-        exporting={exporting}
-        onExportLlmContext={handleExportLlmContext}
-        exportingLlmContext={exportingLlmContext}
-        weightRange={weightRange}
         onBrowseVersions={() => setShowVersions(true)}
         onSaveSnapshot={handleSaveSnapshot}
         savingSnapshot={savingSnapshot}
       />
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <div className="flex items-center gap-4 px-4 h-12 bg-card border-b border-border shrink-0">
+        <div className="relative flex items-center gap-4 px-4 h-12 bg-card border-b border-border shrink-0">
           <Link to="/" className="text-sm text-primary hover:text-primary/80">
             &larr; Launcher
           </Link>
           <span className="font-medium text-sm text-foreground">
             Architecture Map — {level === "L2" ? "Modules" : "Components"}
           </span>
-          <span className="text-xs text-muted-foreground ml-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs h-7 ml-auto border-primary/30 hover:border-primary hover:bg-primary/10"
+            onClick={handleExportLlmContext}
+            disabled={exportingLlmContext}
+          >
+            {exportingLlmContext ? "Exporting…" : "Export LLM Context"}
+          </Button>
+          <span className="text-xs text-muted-foreground">
             {styledNodes.length} nodes / {styledEdges.length} edges
           </span>
           <Button
@@ -663,11 +638,20 @@ function MapViewInner() {
             />
           </ReactFlow>
           <Button
-            className="absolute bottom-4 right-4 z-10"
+            className="absolute bottom-4 right-[220px] z-10"
+            size="sm"
             onClick={() => setShowCreateNode(true)}
           >
             + {level === "L2" ? "Module" : "Component"}
           </Button>
+          {!showChat && (
+            <MapChatBar
+              onSubmit={(message) => {
+                setChatInitialMessage(message);
+                setShowChat(true);
+              }}
+            />
+          )}
           {showTickets && (
             <TicketPanel
               tickets={tickets}
@@ -697,7 +681,11 @@ function MapViewInner() {
       />
       {showChat && (
         <ChatPanel
-          onClose={() => setShowChat(false)}
+          onClose={() => {
+            setShowChat(false);
+            setChatInitialMessage(undefined);
+          }}
+          initialMessage={chatInitialMessage}
           onNodeSelect={(nodeType, id) => {
             const nodeId = nodeType === "module"
               ? (level === "L2" ? `module-${id}` : `group-module-${id}`)

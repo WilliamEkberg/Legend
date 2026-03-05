@@ -49,8 +49,8 @@ _DEPLOYMENT_SUBDIRS = ["config", "k8s", "helm"]
 class _ModuleResult(NamedTuple):
     module_id: int
     module_name: str
-    elevated: list[dict]   # [{text, ids_to_delete}]
-    deployment: list[str]  # [text, ...]
+    elevated: list[dict]   # [{text, detail, ids_to_delete}]
+    deployment: list[dict]  # [{text, detail}]
 
 
 def describe_all_modules(
@@ -112,12 +112,12 @@ def describe_all_modules(
     total_elevated = total_deployment = 0
     for result in results:
         for item in result.elevated:
-            db.add_decision(conn, "cross_cutting", item["text"], module_id=result.module_id, run_id=run_id)
+            db.add_decision(conn, "cross_cutting", item["text"], module_id=result.module_id, run_id=run_id, detail=item.get("detail"))
             if item.get("ids_to_delete"):
                 db.delete_decisions_by_ids(conn, item["ids_to_delete"])
             total_elevated += 1
-        for text in result.deployment:
-            db.add_decision(conn, "deployment", text, module_id=result.module_id, run_id=run_id)
+        for item in result.deployment:
+            db.add_decision(conn, "deployment", item["text"], module_id=result.module_id, run_id=run_id, detail=item.get("detail"))
             total_deployment += 1
 
     print(
@@ -141,11 +141,11 @@ def describe_module(
     result = _describe_module_worker(module, component_decisions, deployment_files, client)
 
     for item in result.elevated:
-        db.add_decision(conn, "cross_cutting", item["text"], module_id=result.module_id, run_id=run_id)
+        db.add_decision(conn, "cross_cutting", item["text"], module_id=result.module_id, run_id=run_id, detail=item.get("detail"))
         if item.get("ids_to_delete"):
             db.delete_decisions_by_ids(conn, item["ids_to_delete"])
-    for text in result.deployment:
-        db.add_decision(conn, "deployment", text, module_id=result.module_id, run_id=run_id)
+    for item in result.deployment:
+        db.add_decision(conn, "deployment", item["text"], module_id=result.module_id, run_id=run_id, detail=item.get("detail"))
 
     print(
         f"  [Part 3]   {module['name']}: "
@@ -230,8 +230,10 @@ def _run_elevation_llm(
         if not text:
             continue
         ids_raw = item.get("source_decision_ids", [])
+        detail = (item.get("detail") or "").strip() or None
         result.append({
             "text": text,
+            "detail": detail,
             "ids_to_delete": [int(i) for i in ids_raw] if ids_raw else [],
         })
     return result
@@ -251,7 +253,7 @@ def _run_deployment_llm(
     )
     response = client.query(prompt, system=MODULE_DEPLOYMENT_SYSTEM, max_tokens=2048)
     return [
-        d["text"].strip()
+        {"text": d["text"].strip(), "detail": (d.get("detail") or "").strip() or None}
         for d in response.get("decisions", [])
         if d.get("text", "").strip()
     ]
