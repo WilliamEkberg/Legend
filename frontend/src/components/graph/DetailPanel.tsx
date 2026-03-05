@@ -390,7 +390,7 @@ function DecisionsSection({
                       <span className="text-xs text-muted-foreground line-through block mb-0.5">{validation.old_text}</span>
                     )}
                     <div
-                      className="flex items-center gap-1.5 cursor-pointer group"
+                      className="flex items-start gap-2 cursor-pointer group"
                       onClick={() => {
                         if (d.detail) {
                           setExpandedIds((prev) => {
@@ -403,16 +403,16 @@ function DecisionsSection({
                       }}
                     >
                       {d.detail ? (
-                        <span className="shrink-0 w-4 h-4 rounded flex items-center justify-center text-xs text-muted-foreground group-hover:text-foreground group-hover:bg-muted transition-colors">
+                        <span className="shrink-0 w-5 h-5 rounded flex items-center justify-center text-xs text-muted-foreground group-hover:text-foreground group-hover:bg-muted/60 transition-colors mt-0.5">
                           {expandedIds.has(d.id) ? "▾" : "▸"}
                         </span>
                       ) : (
-                        <span className="shrink-0 w-4" />
+                        <span className="shrink-0 w-5" />
                       )}
-                      <span className="text-sm text-foreground leading-snug">{d.text}</span>
+                      <span className="text-[13px] font-medium text-foreground leading-snug">{d.text}</span>
                     </div>
                     {d.detail && expandedIds.has(d.id) && (
-                      <ul className="text-xs text-foreground mt-1 ml-5.5 pl-2 border-l-2 border-primary/30 leading-relaxed space-y-1.5 list-none">
+                      <ul className="text-sm text-black dark:text-white mt-2 p-3 bg-muted/40 rounded-md leading-relaxed space-y-2 list-none">
                         {d.detail.split("\n").filter(Boolean).map((line, i) => (
                           <li key={i}>{line}</li>
                         ))}
