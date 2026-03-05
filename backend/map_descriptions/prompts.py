@@ -34,21 +34,21 @@ Categories (use exactly these strings):
 
 Each decision has two parts:
 - "text": A SHORT label (max ~10 words) that gives intuition about what this decision covers. Think of it as a heading you'd scan in a list.
-- "detail": The actual technical substance — concrete, falsifiable, specific. This is where the real information goes: what exactly the code does, specific function names, patterns, constraints, and trade-offs.
+- "detail": The actual technical substance — concrete, falsifiable, specific. This is where the real information goes: what exactly the code does, specific function names, patterns, constraints, and trade-offs. Use newlines (\\n) to separate distinct points within the detail for readability — don't write one massive run-on paragraph.
 
 Examples of good decisions:
 - (api_contracts)   text: "Single public auth entry point"
-                    detail: "Exposes authenticate(token) -> User | Error as the sole interface; all auth checks funnel through this single entry point, called per-request by middleware with the raw Bearer token"
+                    detail: "Exposes authenticate(token) -> User | Error as the sole interface.\nAll auth checks funnel through this single entry point.\nCalled per-request by middleware with the raw Bearer token."
 - (patterns)        text: "Repository pattern for DB access"
-                    detail: "All database queries go through a Repository interface; no component accesses the DB directly"
+                    detail: "All database queries go through a Repository interface.\nNo component accesses the DB directly."
 - (libraries)       text: "jsonwebtoken for token handling"
-                    detail: "Chose over jose for simpler API; only HS256 and RS256 algorithms are allowed; tokens parsed and validated in a single call"
+                    detail: "Chose over jose for simpler API.\nOnly HS256 and RS256 algorithms are allowed.\nTokens parsed and validated in a single call."
 - (boundaries)      text: "Delegates user lookup externally"
-                    detail: "Never queries the users database directly; all user resolution goes through the users component's public API"
+                    detail: "Never queries the users database directly.\nAll user resolution goes through the users component's public API."
 - (error_handling)  text: "HTTP 401/403 error strategy"
-                    detail: "Returns 401 for expired tokens with WWW-Authenticate header (error=invalid_token) for client-side refresh flows; 403 for insufficient permissions; no retry logic"
+                    detail: "Returns 401 for expired tokens with WWW-Authenticate header (error=invalid_token) for client-side refresh flows.\n403 for insufficient permissions.\nNo retry logic."
 - (data_flow)       text: "HTTP body → JWT → typed User"
-                    detail: "Accepts raw HTTP request body, validates JWT payload structure and signature, returns typed User object; rejects malformed tokens before signature check"
+                    detail: "Accepts raw HTTP request body.\nValidates JWT payload structure and signature.\nReturns typed User object.\nRejects malformed tokens before signature check."
 
 Examples of decisions to SKIP:
 - "Written in TypeScript" (language is a module-level fact, not a component decision)
@@ -101,7 +101,7 @@ These are cross-cutting patterns that should be elevated to module level.
 
 Rules:
 - "text" MUST be short (max ~10 words) — a scannable label for the cross-cutting pattern
-- "detail" carries the substance — what the pattern is, which components share it, specifics
+- "detail" carries the substance — what the pattern is, which components share it, specifics. Use newlines (\\n) to separate distinct points within the detail for readability.
 - Only elevate decisions shared across the MAJORITY of components (>50%)
 - Do NOT elevate conflicting decisions (e.g. one component uses Zod, another uses Joi) — keep those at component level
 - Return the merged statement and the exact IDs of all source decisions to delete
@@ -157,7 +157,7 @@ Extract deployment-level decisions covering:
 
 Rules:
 - "text" MUST be short (max ~10 words) — a scannable label for the deployment decision
-- "detail" carries the substance — specific config values, file paths, environment details
+- "detail" carries the substance — specific config values, file paths, environment details. Use newlines (\\n) to separate distinct points within the detail for readability.
 - Only include decisions traceable to the configuration files provided
 - Do not repeat decisions already captured at the component level
 

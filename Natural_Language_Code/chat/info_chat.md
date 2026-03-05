@@ -128,7 +128,7 @@ All write tools reuse existing CRUD functions from `db.py` and create change rec
 
 #### Frontend (ChatPanel)
 
-420px collapsible right sidebar on the map view. Uses the same styling patterns as DetailPanel (framer-motion slide, shadcn Button, Tailwind utilities).
+420px flex-based right sidebar on the map view (not absolutely positioned). Participates in the main flex layout as a sibling of DetailPanel — when both are open, DetailPanel appears first (left) and ChatPanel appears to its right, like Cursor's panel layout. Uses shadcn Button and Tailwind utilities.
 
 Features:
 - **Mode toggle**: Ask / Edit toggle in header (styled like the L2/L3 toggle)
@@ -203,3 +203,4 @@ Features:
 ## Log
 
 - 2026-03-02 :: william :: Created doc. Implemented full MCP chat feature: MCP server (mcp_server.py), chat orchestration (chat.py), 3 backend endpoints, ChatPanel frontend component with ask/edit modes, propose-then-confirm flow, streaming SSE, markdown rendering, node navigation. New dependencies: mcp>=1.0 (backend), react-markdown (frontend).
+- 2026-03-05 :: william :: Changed ChatPanel and DetailPanel from absolute-positioned overlays to flex-based layout siblings. Both panels now participate in the main flex row: [Sidebar][Map][DetailPanel?][ChatPanel?]. Removed framer-motion from both panels. When both are open they stack side-by-side like Cursor.

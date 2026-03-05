@@ -9,8 +9,8 @@ import type {
 } from "../data/types";
 
 /** Replace pipe separators with commas for safe markdown table cells. */
-function escapeForTable(value: string): string {
-  return value.replace(/\s*\|\s*/g, ", ");
+function escapeForTable(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s*\|\s*/g, ", ");
 }
 
 /** Sanitize a module name into a valid filename (no extension). */
@@ -41,8 +41,11 @@ function renderDecisions(
     for (const d of items) {
       lines.push(`- ${d.text} *(source: ${d.source})*`);
       if (d.detail) {
-        lines.push(`  > ${d.detail}`);
+        for (const detailLine of d.detail.split("\n")) {
+          lines.push(`  > ${detailLine}`);
+        }
       }
+      lines.push("");
     }
     lines.push("");
   }

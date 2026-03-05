@@ -35,9 +35,8 @@ Desktop application for the Legend pipeline. Two roles:
 5. **Node selection** — Click a node → detail panel slides in from right showing:
    - Module detail: name, type, technology, deployment target, decisions grouped by category (`cross_cutting`, `deployment`), list of components
    - Component detail: name, parent module, decisions grouped by category (`api_contracts`, `patterns`, `libraries`, `boundaries`, `error_handling`, `data_flow`), file list
-6. **Edge filtering** — Toggle edge types (call/import/inheritance), filter by weight threshold
-7. **Search** — Type to filter nodes; non-matching nodes and edges dim but remain visible
-8. **Sidebar** — Level selector (L2/L3), edge filter controls, fit-view button
+6. **Search** — Type to filter nodes; non-matching nodes and edges dim but remain visible
+7. **Sidebar** — Level selector (L2/L3), search, fit-view, history, tickets
 
 #### Rules & Edge Cases
 
@@ -177,7 +176,7 @@ Map visualization:
 | `frontend/src/components/graph/GroupNode.tsx` | Background container node for module groups at L3 level |
 | `frontend/src/components/graph/AnimatedEdge.tsx` | Custom edge: Bezier curves, type-based colors, logarithmic weight scaling, SVG-based labels |
 | `frontend/src/components/graph/DetailPanel.tsx` | Right-side slide-in panel: decisions grouped by category with expand/collapse detail toggle, inline edit/add/delete, validation badges, change diff badges |
-| `frontend/src/components/graph/MapSidebar.tsx` | Left sidebar: L2/L3 level toggle, edge type filters, weight threshold, search, fit-view, export map JSON |
+| `frontend/src/components/graph/MapSidebar.tsx` | Left sidebar: L2/L3 level toggle, search, fit-view, history, tickets |
 | `frontend/src/data/mapTransform.ts` | Transform `export_full_map` JSON → @xyflow nodes + edges (async, uses auto-layout for L2) |
 | `frontend/src/data/autoLayout.ts` | d3-force automatic graph layout: degree-based centering pulls connected nodes to center, isolated nodes get stronger pull to stay near cluster |
 | `frontend/src/data/types.ts` | TypeScript interfaces for map data, node data, edge data |
@@ -186,7 +185,8 @@ Map visualization:
 | `frontend/src/components/graph/CreateNodeModal.tsx` | Modal for creating new modules (L2) or components (L3) with form fields matching DB schema |
 | `frontend/src/components/graph/EdgeLabelPopup.tsx` | Modal triggered by handle drag (onConnect): edge type dropdown + optional label, then persists via API |
 | `frontend/src/components/graph/VersionPanel.tsx` | Bottom slide-up panel: version list with compare dropdown, version detail (decisions grouped by module), version comparison (added/removed/changed diff view) |
-| `frontend/src/components/graph/ChatPanel.tsx` | Right-side chat sidebar (420px): ask/edit mode toggle, streaming message display with markdown, tool call badges, proposed change cards with apply/reject, node reference links |
+| `frontend/src/components/graph/ChatPanel.tsx` | Right-side chat sidebar (420px): ask/edit mode toggle, streaming message display with markdown, tool call badges, proposed change cards with apply/reject, node reference links, accepts initialMessage prop for auto-send from chat bar |
+| `frontend/src/components/graph/MapChatBar.tsx` | Floating OpenAI-style chat input bar at bottom center of map canvas, visible when ChatPanel is closed, opens ChatPanel with initial message on submit |
 
 ---
 
@@ -438,7 +438,7 @@ Replaces single global d3-force simulation with per-module simulations for bette
 
 - [x] Create `frontend/src/export/llmContext.ts` — pure markdown generation from MapData (buildModuleMd, buildTableOfContents, buildLlmContextFiles)
 - [x] Add `exportLlmContext()` to `client.ts` — directory picker via `open()`, create `LLM_Context/` folder, write markdown files
-- [x] Add "Export LLM Context" button to `MapSidebar.tsx` below "Export Map JSON"
+- [x] Add "Export LLM Context" button to top header bar in `MapView.tsx` (prominent, center-right position)
 - [x] Wire button in `MapView.tsx` with state + handler
 - [x] Add `dialog:allow-open` and `fs:allow-mkdir` permissions to Tauri capabilities
 - [x] Fix pipe characters in `technology` field breaking markdown tables — `escapeForTable()` replaces `|` with `, `
@@ -474,3 +474,13 @@ Replaces single global d3-force simulation with per-module simulations for bette
 - 2026-03-04 :: william :: Added Export LLM Context feature.
 - 2026-03-05 :: william :: Fixed LLM Context export: pipe characters in technology field (e.g. "tauri | react | typescript") broke markdown tables in Table_of_content.md and per-module Overview tables. Added escapeForTable() helper that replaces `|` with `, `.
 - 2026-03-05 :: william :: Added decision `detail` field support. Decisions now have `text` (short ~10 word label) + optional `detail` (full technical substance). DetailPanel: detail hidden by default, click decision row to expand/collapse (▸/▾ toggle). Detail text uses full foreground color with primary-tinted left border for readability. Removed "pipeline_generated" source label under each decision. Edit via explicit "edit" button in bottom row (no accidental edits from clicking text). Edit/add textareas auto-resize to fit content. MapDecision type updated with `detail?: string | null`. API client functions pass detail through. LLM Context export renders detail as blockquote under each decision bullet.
+- 2026-03-05 :: william :: Improved LLM Context export readability: added blank lines between decision entries in renderDecisions(), and multi-line detail support (splits on newlines for proper blockquote rendering).
+- 2026-03-05 :: william :: Added floating chat bar (MapChatBar.tsx) at bottom center of map canvas. OpenAI-style pill input with frosted glass background, Send icon button (lucide-react), auto-resizing textarea. Visible only when ChatPanel is closed. On submit: opens ChatPanel and auto-sends the message via new `initialMessage` prop. ChatPanel.handleSend() updated to accept optional override text parameter.
+- 2026-03-05 :: william :: Moved "Export LLM Context" button from sidebar to top header bar for better visibility. Positioned center-right between map title and node/edge count with subtle primary-colored border styling. Removed "Export Map JSON" button, "Export LLM Context" sidebar button, edge type filter checkboxes, and min weight slider from sidebar. Sidebar now contains: level toggle, search, fit view, history, and tickets only.
+
+### Floating Chat Bar (Quick Access)
+
+- [x] Build `MapChatBar.tsx` — OpenAI-style floating input bar at bottom center of map canvas
+- [x] Only visible when ChatPanel is closed
+- [x] On submit: opens ChatPanel and passes initial message to send immediately
+- [x] Visual: rounded pill input with send button, frosted glass background, centered above bottom edge

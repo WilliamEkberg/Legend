@@ -1,7 +1,6 @@
 // Doc: Natural_Language_Code/Frontend/info_frontend.md
 
 import { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import type { SelectedNode, MapDecision, MapModule, MapComponent, ChangeRecord, ValidationSummary, DecisionValidation } from "../../data/types";
 import { updateDecision, createDecision, deleteDecision, deleteModule, deleteComponent } from "../../api/client";
 import { Button } from "@/components/ui/button";
@@ -90,15 +89,11 @@ export function DetailPanel({ selected, onClose, onDecisionChange, changeRecords
     }
   }
 
+  if (!selected) return null;
+
   return (
-    <AnimatePresence>
-      {selected && (
-        <motion.div
-          className="absolute top-0 right-0 h-full w-96 bg-card border-l border-border shadow-xl z-20 flex flex-col"
-          initial={{ x: "100%" }}
-          animate={{ x: 0 }}
-          exit={{ x: "100%" }}
-          transition={{ type: "spring", damping: 40, stiffness: 200 }}
+        <div
+          className="h-full w-96 bg-card border-l border-border shadow-xl flex flex-col shrink-0"
         >
           <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
             <h2 className="text-lg font-semibold text-foreground truncate">
@@ -146,9 +141,7 @@ export function DetailPanel({ selected, onClose, onDecisionChange, changeRecords
               />
             )}
           </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        </div>
   );
 }
 
@@ -419,9 +412,11 @@ function DecisionsSection({
                       <span className="text-sm text-foreground leading-snug">{d.text}</span>
                     </div>
                     {d.detail && expandedIds.has(d.id) && (
-                      <p className="text-xs text-foreground mt-1 ml-5.5 pl-2 border-l-2 border-primary/30 leading-relaxed">
-                        {d.detail}
-                      </p>
+                      <ul className="text-xs text-foreground mt-1 ml-5.5 pl-2 border-l-2 border-primary/30 leading-relaxed space-y-1.5 list-none">
+                        {d.detail.split("\n").filter(Boolean).map((line, i) => (
+                          <li key={i}>{line}</li>
+                        ))}
+                      </ul>
                     )}
                     <div className="flex items-center gap-2 mt-1 ml-5.5">
                       {valInfo && (
