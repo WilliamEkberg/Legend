@@ -142,10 +142,10 @@ if [ -f "$CODEBASE_PATH/package.json" ]; then
     elif [ -f "pnpm-lock.yaml" ]; then
         if command -v pnpm > /dev/null; then
             echo -e "${BLUE}Using pnpm...${NC}"
-            pnpm install --frozen-lockfile --ignore-scripts || echo -e "${YELLOW}pnpm install failed, continuing anyway...${NC}"
+            pnpm install --frozen-lockfile --ignore-scripts --config.engine-strict=false || echo -e "${YELLOW}pnpm install failed, continuing anyway...${NC}"
         else
             echo -e "${BLUE}pnpm detected but not installed. Using npx pnpm...${NC}"
-            npx pnpm install --frozen-lockfile --ignore-scripts || echo -e "${YELLOW}pnpm install failed, continuing anyway...${NC}"
+            npx pnpm install --frozen-lockfile --ignore-scripts --config.engine-strict=false || echo -e "${YELLOW}pnpm install failed, continuing anyway...${NC}"
         fi
     else
         echo -e "${BLUE}Using npm...${NC}"

@@ -32,10 +32,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================
-# PHP 8.2 (scip-php requires ^8.2, Ubuntu 22.04 ships 8.1)
+# PHP 8.3 (scip-php requires ^8.2, Ubuntu 22.04 ships 8.1)
 # ============================================
 RUN add-apt-repository -y ppa:ondrej/php \
-    && apt-get update && apt-get install -y php8.2-cli \
+    && apt-get update && apt-get install -y php8.3-cli \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================
@@ -53,12 +53,25 @@ RUN echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | tee /etc/ap
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================
-# Node.js 20 + pnpm
+# Node.js 20 + pnpm + n version manager
 # ============================================
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g pnpm \
-    && rm -rf /var/lib/apt/lists/*
+# Install Node 20 from official binary (NodeSource apt repo is flaky)
+RUN case "${TARGETARCH}" in \
+    "amd64") NODE_ARCH="x64" ;; \
+    "arm64") NODE_ARCH="arm64" ;; \
+    *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    esac \
+    && curl -fsSL "https://nodejs.org/dist/v20.18.3/node-v20.18.3-linux-${NODE_ARCH}.tar.xz" \
+    | tar -xJ --strip-components=1 -C /usr/local \
+    && npm install -g pnpm
+
+# Install 'n' version manager for runtime Node.js switching
+# Pre-install Node 22 LTS alongside Node 20 (covers ~95% of modern repos)
+# n stores versions in /usr/local/n/versions/node/ — switching is a fast copy
+RUN npm install -g n \
+    && n 22 \
+    && n 20
+ENV N_PREFIX=/usr/local
 
 # ============================================
 # .NET 8 SDK
@@ -78,9 +91,9 @@ RUN /usr/share/dotnet/dotnet tool install -g scip-dotnet --version 0.2.12
 # Go 1.24 (architecture-aware)
 # ============================================
 RUN case "${TARGETARCH}" in \
-        "amd64") GO_ARCH="amd64" ;; \
-        "arm64") GO_ARCH="arm64" ;; \
-        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    "amd64") GO_ARCH="amd64" ;; \
+    "arm64") GO_ARCH="arm64" ;; \
+    *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
     esac \
     && curl -fsSL "https://go.dev/dl/go1.24.4.linux-${GO_ARCH}.tar.gz" | tar -C /usr/local -xzf -
 
@@ -98,21 +111,24 @@ RUN go install github.com/sourcegraph/scip-go/cmd/scip-go@v0.1.26 \
 RUN npm install -g @sourcegraph/scip-typescript@0.4.0 @sourcegraph/scip-python@0.6.6
 
 # Create wrapper scripts for scip-typescript and scip-python
-RUN printf '#!/bin/bash\nexec node /usr/lib/node_modules/@sourcegraph/scip-typescript/dist/src/main.js "$@"\n' > /usr/local/bin/scip-typescript \
+# npm install -g creates symlinks in /usr/local/bin/ pointing to the JS source files.
+# We must remove them first, otherwise '>' follows the symlink and overwrites the JS source.
+RUN rm -f /usr/local/bin/scip-typescript /usr/local/bin/scip-python \
+    && printf '#!/bin/bash\nexec node /usr/local/lib/node_modules/@sourcegraph/scip-typescript/dist/src/main.js "$@"\n' > /usr/local/bin/scip-typescript \
     && chmod +x /usr/local/bin/scip-typescript \
-    && printf '#!/bin/bash\nexec node /usr/lib/node_modules/@sourcegraph/scip-python/index.js "$@"\n' > /usr/local/bin/scip-python \
+    && printf '#!/bin/bash\nexec node /usr/local/lib/node_modules/@sourcegraph/scip-python/index.js "$@"\n' > /usr/local/bin/scip-python \
     && chmod +x /usr/local/bin/scip-python
 
 # ============================================
 # Java indexer (scip-java via Coursier)
 # ============================================
 RUN case "${TARGETARCH}" in \
-        "amd64") CS_ARCH="x86_64" ;; \
-        "arm64") CS_ARCH="aarch64" ;; \
-        *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
+    "amd64") CS_ARCH="x86_64" ;; \
+    "arm64") CS_ARCH="aarch64" ;; \
+    *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
     esac \
     && curl -fL "https://github.com/coursier/launchers/raw/master/cs-${CS_ARCH}-pc-linux.gz" \
-       | gzip -d > /usr/local/bin/cs \
+    | gzip -d > /usr/local/bin/cs \
     && chmod +x /usr/local/bin/cs \
     && mkdir -p /root/.local/share/coursier/bin \
     && cs bootstrap com.sourcegraph:scip-java_2.13:0.11.1 -M com.sourcegraph.scip_java.ScipJava -f -o /usr/local/bin/scip-java
@@ -137,7 +153,7 @@ RUN echo "=== Verifying base image installations ===" \
     && echo "Go: $(go version)" \
     && echo "Python: $(python3 --version)" \
     && echo "Java: $(java --version 2>&1 | head -1)" \
-    && echo "PHP: $(php8.2 --version | head -1)" \
+    && echo "PHP: $(php8.3 --version | head -1)" \
     && echo "scip CLI: $(scip --version 2>&1 | head -1 || echo 'installed')" \
     && echo "=== Base image ready ==="
 

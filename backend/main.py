@@ -1173,6 +1173,9 @@ async def run_stream(req: StreamRunRequest):
     if req.step == "part1":
         env = {**os.environ, env_var: req.api_key}
         source_dir = req.repo_path or str(PROJECT_DIR)
+        # Symlink so opencode (sandboxed to OUTPUT_DIR) can read the target
+        # codebase.  Defined here so the cleanup wrapper can always reference it.
+        _codebase_link = OUTPUT_DIR / "codebase"
 
         async def part1_stream():
             # Validate source directory exists (macOS Docker silently fails otherwise)
@@ -1186,9 +1189,13 @@ async def run_stream(req: StreamRunRequest):
             # ----------------------------------------------------------------
             # Step 1A: Run SCIP indexer in parallel with opencode (modules)
             # ----------------------------------------------------------------
+            if _codebase_link.is_symlink() or _codebase_link.exists():
+                _codebase_link.unlink()
+            _codebase_link.symlink_to(Path(source_dir).resolve())
+
             modules_prompt = modules_system_prompt() + "\n\n---\n\n" + modules_variables_prompt(
-                project_dir=source_dir,
-                output_dir=str(OUTPUT_DIR),
+                project_dir="./codebase",
+                output_dir=".",
             )
 
             # Use shell=True on Windows to handle long prompts via stdin piping
@@ -1296,8 +1303,10 @@ async def run_stream(req: StreamRunRequest):
                         yield f"data: {json.dumps({'type': 'stdout', 'text': '[SCIP] Warning: indexer succeeded but no .scip file found. Part 2 will retry.'})}\n\n"
 
             if opencode_rc != 0:
+                yield f"data: {json.dumps({'type': 'stderr', 'text': f'[Part 1] Modules step exited with code {opencode_rc}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                 return
+            yield f"data: {json.dumps({'type': 'stdout', 'text': '[Part 1] Modules step completed (exit code 0)'})}\n\n"
 
             # ----------------------------------------------------------------
             # Step 1B: Ingest modules JSON → DB, build id_map
@@ -1306,6 +1315,13 @@ async def run_stream(req: StreamRunRequest):
             # Diagnostic: list any JSON files present after modules step
             json_present = [f.name for f in OUTPUT_DIR.glob("*.json")]
             yield f"data: {json.dumps({'type': 'stdout', 'text': f'[Part 1] JSON files in output/: {json_present}'})}\n\n"
+
+            # Check if opencode wrote the file inside codebase/ instead of output/
+            if not modules_path.exists():
+                misplaced = _codebase_link / MODULES_FILENAME
+                if misplaced.exists():
+                    yield f"data: {json.dumps({'type': 'stdout', 'text': f'[Part 1] WARNING: {MODULES_FILENAME} found in codebase/ instead of output/. Moving it.'})}\n\n"
+                    shutil.move(str(misplaced), str(modules_path))
 
             if not modules_path.exists():
                 yield f"data: {json.dumps({'type': 'stderr', 'text': f'[Part 1] {MODULES_FILENAME} not found. Module step may have failed or used a different filename.'})}\n\n"
@@ -1334,7 +1350,8 @@ async def run_stream(req: StreamRunRequest):
             yield f"data: {json.dumps({'type': 'stdout', 'text': '[Part 1] Identifying relationships between modules...'})}\n\n"
 
             edges_prompt = edges_system_prompt() + "\n\n---\n\n" + edges_variables_prompt(
-                output_dir=str(OUTPUT_DIR),
+                output_dir=".",
+                project_dir="./codebase",
             )
 
             edges_cmd = [_get_opencode_executable(), "run", "--agent", "build", "-m", model]
@@ -1417,7 +1434,15 @@ async def run_stream(req: StreamRunRequest):
 
             yield f"data: {json.dumps({'type': 'done', 'success': edges_rc == 0})}\n\n"
 
-        return StreamingResponse(part1_stream(), media_type="text/event-stream")
+        async def part1_stream_with_cleanup():
+            try:
+                async for chunk in part1_stream():
+                    yield chunk
+            finally:
+                if _codebase_link.is_symlink():
+                    _codebase_link.unlink()
+
+        return StreamingResponse(part1_stream_with_cleanup(), media_type="text/event-stream")
 
     elif req.step == "part2":
         # Part 2: SCIP indexing (or reuse) + Component Discovery
