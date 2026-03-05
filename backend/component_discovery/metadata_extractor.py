@@ -111,11 +111,26 @@ def extract_file_metadata(
             index.ParseFromString(f.read())
         all_documents.extend(index.documents)
 
+    # Build raw-path -> normalized-path mapping.
+    # SCIP paths may include a repo name prefix (e.g. "Legend/backend/main.py")
+    # while module_files uses repo-relative paths ("backend/main.py").
+    raw_to_normalized: dict[str, str] = {}
+    for doc in all_documents:
+        rp = doc.relative_path
+        if rp in module_files:
+            raw_to_normalized[rp] = rp
+        else:
+            # Try to find module_file that is a suffix of this raw path
+            for mf in module_files:
+                if rp.endswith("/" + mf) or rp.endswith(mf):
+                    raw_to_normalized[rp] = mf
+                    break
+
     files_metadata = {}
 
     for doc in all_documents:
-        file_path = doc.relative_path
-        if file_path not in module_files:
+        file_path = raw_to_normalized.get(doc.relative_path)
+        if file_path is None:
             continue
 
         source_path = source_root / file_path if source_available else None

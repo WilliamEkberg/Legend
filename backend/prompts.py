@@ -196,7 +196,7 @@ The output must be valid JSON matching the schema above. Do not create any other
 """
 
 
-def edges_variables_prompt(output_dir: str) -> str:
+def edges_variables_prompt(output_dir: str, project_dir: str = "./codebase") -> str:
     """Task prompt for Step 2 — tells the LLM to read modules JSON first, then output edges."""
     return f"""
 ## Your task
@@ -208,8 +208,12 @@ Read the file `{output_dir}/{MODULES_FILENAME}` now. You must read it before doi
 Study every module ID carefully — you will reference them in the output.
 
 **Step 2 — Read manifest files**:
-Read manifest files (`package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `docker-compose*.yml`,
-`requirements.txt`) to find which modules depend on which other modules.
+The codebase is at `{project_dir}`. Read manifest files there to find dependencies:
+- `{project_dir}/**/package.json` — look at `dependencies`, `devDependencies` for workspace refs
+- `{project_dir}/**/go.mod` and `{project_dir}/go.work` — `require` and `replace` directives
+- `{project_dir}/**/Cargo.toml` — `[dependencies]` with local `path` entries
+- `{project_dir}/**/docker-compose*.yml` and `{project_dir}/**/docker-compose*.yaml` — `depends_on`, `links`
+- `{project_dir}/**/pyproject.toml` and `{project_dir}/**/requirements.txt` — Python dependencies
 
 **Output**: Write the result to the file `{output_dir}/{EDGES_FILENAME}`.
 The output must be valid JSON matching the schema above. Do not create any other files.

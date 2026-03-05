@@ -18,6 +18,13 @@ pub struct IndexerResult {
     pub error: Option<String>,
 }
 
+/// Detected Node.js version hint from a repository
+struct NodeVersionHint {
+    source: &'static str,
+    raw: String,
+    major: u32,
+}
+
 /// Orchestrates SCIP indexer execution
 pub struct IndexerOrchestrator {
     indexers_path: Option<PathBuf>,
@@ -191,6 +198,8 @@ impl IndexerOrchestrator {
     /// Phase 1: Try directly from codebase path (works when mount is writable or tsconfig exists)
     /// Phase 2: Create a writable workspace with real tsconfig (avoids symlink overlay issues)
     fn run_typescript_indexer(&self, output: &Path) -> Result<()> {
+        self.ensure_node_version(); // Non-fatal, switches Node if needed
+
         let output_str = output.to_str().unwrap();
         let has_root_tsconfig = self.codebase_path.join("tsconfig.json").exists();
 
@@ -223,15 +232,167 @@ impl IndexerOrchestrator {
             return phase1;
         }
 
-        // Phase 2: Direct indexing failed (likely read-only mount + --infer-tsconfig can't write).
-        // Create a writable workspace with real tsconfig (preserves path aliases, jsx, etc.)
+        // Phase 2: Direct indexing failed (likely read-only mount).
         warn!("Direct TypeScript indexing failed, retrying with writable workspace");
-        let workspace = self.create_ts_workspace()?;
-        let mut fallback_args = vec!["index", "--output", output_str, "--max-file-byte-size", "10mb"];
-        if let Some(flag) = workspace_flag {
-            fallback_args.push(flag);
+
+        if workspace_flag.is_some() {
+            // Monorepo: deep-copy + package install so cross-package configs resolve
+            info!("Detected monorepo workspace — creating deep workspace with dependency install");
+            let workspace = self.create_monorepo_ts_workspace()?;
+            let mut fallback_args = vec!["index", "--output", output_str, "--max-file-byte-size", "10mb"];
+            if let Some(flag) = workspace_flag {
+                fallback_args.push(flag);
+            }
+            self.try_typescript_from_dir(&fallback_args, &workspace)
+        } else {
+            // Simple project: shallow copy (existing behavior, unchanged)
+            let workspace = self.create_ts_workspace()?;
+            let fallback_args = vec!["index", "--output", output_str, "--max-file-byte-size", "10mb"];
+            self.try_typescript_from_dir(&fallback_args, &workspace)
         }
-        self.try_typescript_from_dir(&fallback_args, &workspace)
+    }
+
+    /// Detect the required Node.js version from the target repository.
+    /// Checks version hints in priority order:
+    /// 1. .node-version file (explicit single version)
+    /// 2. .nvmrc file (handles lts/* → use default)
+    /// 3. package.json engines.node field (extract minimum major)
+    /// 4. package.json volta.node field
+    /// 5. No hint → None (use container default)
+    fn detect_required_node_version(&self) -> Option<NodeVersionHint> {
+        // 1. .node-version file (highest priority — explicit project pin)
+        let node_version_file = self.codebase_path.join(".node-version");
+        if node_version_file.exists() {
+            if let Ok(raw) = std::fs::read_to_string(&node_version_file) {
+                let raw = raw.trim().to_string();
+                if let Some(major) = Self::extract_major_version(&raw) {
+                    return Some(NodeVersionHint { source: ".node-version", raw, major });
+                }
+            }
+        }
+
+        // 2. .nvmrc file
+        let nvmrc = self.codebase_path.join(".nvmrc");
+        if nvmrc.exists() {
+            if let Ok(raw) = std::fs::read_to_string(&nvmrc) {
+                let raw = raw.trim().to_string();
+                // lts/* or lts/hydrogen etc. → use default (we already have LTS)
+                if raw.starts_with("lts") {
+                    return None;
+                }
+                if let Some(major) = Self::extract_major_version(&raw) {
+                    return Some(NodeVersionHint { source: ".nvmrc", raw, major });
+                }
+            }
+        }
+
+        // 3 & 4. package.json engines.node / volta.node
+        let pkg_path = self.codebase_path.join("package.json");
+        if pkg_path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&pkg_path) {
+                if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    // 3. engines.node (e.g. ">=22", "^22.0.0", "22")
+                    if let Some(engines_node) = pkg.get("engines")
+                        .and_then(|e| e.get("node"))
+                        .and_then(|n| n.as_str())
+                    {
+                        let raw = engines_node.to_string();
+                        if let Some(major) = Self::extract_major_version(&raw) {
+                            return Some(NodeVersionHint { source: "package.json engines.node", raw, major });
+                        }
+                    }
+
+                    // 4. volta.node (e.g. "22.0.0")
+                    if let Some(volta_node) = pkg.get("volta")
+                        .and_then(|v| v.get("node"))
+                        .and_then(|n| n.as_str())
+                    {
+                        let raw = volta_node.to_string();
+                        if let Some(major) = Self::extract_major_version(&raw) {
+                            return Some(NodeVersionHint { source: "package.json volta.node", raw, major });
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Extract the first major version number from a version string.
+    /// Handles: "22", "22.0.0", ">=22.0.0", "^22", "~22.1", "v22.0.0"
+    fn extract_major_version(s: &str) -> Option<u32> {
+        // Skip leading non-digit characters (>=, ^, ~, v, etc.)
+        let digits_start = s.find(|c: char| c.is_ascii_digit())?;
+        let rest = &s[digits_start..];
+        // Take consecutive digits
+        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        rest[..end].parse().ok()
+    }
+
+    /// Switch Node.js version if the target repo requires a different one.
+    /// Uses `n` version manager which swaps /usr/local/bin/node in-place.
+    /// Non-fatal on failure — logs warning and continues with current version.
+    fn ensure_node_version(&self) {
+        let hint = match self.detect_required_node_version() {
+            Some(h) => h,
+            None => return,
+        };
+
+        info!(
+            "Detected Node.js version requirement: {} (from {}, raw: {:?})",
+            hint.major, hint.source, hint.raw
+        );
+
+        // Get current Node.js major version
+        let current_major = match Command::new("node")
+            .arg("--version")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let version_str = String::from_utf8_lossy(&output.stdout);
+                Self::extract_major_version(version_str.trim())
+            }
+            _ => {
+                warn!("Could not determine current Node.js version");
+                return;
+            }
+        };
+
+        let current = match current_major {
+            Some(v) => v,
+            None => return,
+        };
+
+        if current == hint.major {
+            info!("Node.js v{} already matches requirement", current);
+            return;
+        }
+
+        info!("Switching Node.js from v{} to v{} via `n`", current, hint.major);
+
+        match Command::new("n")
+            .arg(hint.major.to_string())
+            .status()
+        {
+            Ok(status) if status.success() => {
+                info!("Successfully switched to Node.js v{}", hint.major);
+            }
+            Ok(status) => {
+                warn!(
+                    "Failed to switch Node.js to v{} (exit {:?}), continuing with v{}",
+                    hint.major,
+                    status.code(),
+                    current
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to run `n {}`: {}, continuing with Node.js v{}",
+                    hint.major, e, current
+                );
+            }
+        }
     }
 
     /// Check if package.json has a "workspaces" field (yarn/npm monorepo)
@@ -306,6 +467,88 @@ impl IndexerOrchestrator {
 
         info!("Created writable ts-workspace at {:?}", ws);
         Ok(ws)
+    }
+
+    /// Create a deep-copy workspace for monorepo TypeScript projects.
+    /// Monorepos (pnpm/yarn/npm workspaces) have sub-packages that reference shared
+    /// TypeScript configs via node_modules (e.g. `"extends": "@n8n/typescript-config/tsconfig.common.json"`).
+    /// These resolve through symlinks created by package managers. A shallow copy won't work —
+    /// we need the full directory tree plus a package install to create node_modules.
+    fn create_monorepo_ts_workspace(&self) -> Result<PathBuf> {
+        let ws = self.output_dir.join("ts-workspace");
+        if ws.exists() {
+            std::fs::remove_dir_all(&ws)?;
+        }
+        std::fs::create_dir_all(&ws)?;
+
+        // Deep-copy via tar pipe (fast, excludes build artifacts and VCS)
+        info!("Deep-copying codebase to writable workspace via tar...");
+        let mut tar_child = Command::new("tar")
+            .current_dir(&self.codebase_path)
+            .args([
+                "-cf", "-",
+                "--exclude=.git", "--exclude=node_modules",
+                "--exclude=dist", "--exclude=build",
+                "--exclude=.next", "--exclude=coverage",
+                "--exclude=__pycache__", ".",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+
+        let extract_status = Command::new("tar")
+            .current_dir(&ws)
+            .args(["-xf", "-"])
+            .stdin(tar_child.stdout.take().unwrap())
+            .status()?;
+
+        // Wait for tar producer to finish
+        tar_child.wait()?;
+
+        if !extract_status.success() {
+            return Err(anyhow!("tar copy to ts-workspace failed"));
+        }
+
+        // Install deps so node_modules symlinks exist for tsconfig resolution
+        self.install_node_dependencies(&ws)?;
+
+        info!("Created monorepo ts-workspace at {:?}", ws);
+        Ok(ws)
+    }
+
+    /// Detect the package manager from lock files and run install with --ignore-scripts.
+    /// We only need the node_modules structure for config resolution, not build artifacts.
+    /// Non-fatal on failure (matches patterns in try_install_python_deps and download_go_deps).
+    fn install_node_dependencies(&self, workspace: &Path) -> Result<()> {
+        let (cmd, args): (&str, Vec<&str>) =
+            if workspace.join("pnpm-lock.yaml").exists() && which::which("pnpm").is_ok() {
+                info!("Running pnpm install in monorepo workspace...");
+                ("pnpm", vec!["install", "--frozen-lockfile", "--ignore-scripts", "--config.engine-strict=false"])
+            } else if workspace.join("yarn.lock").exists() && which::which("yarn").is_ok() {
+                info!("Running yarn install in monorepo workspace...");
+                ("yarn", vec!["install", "--frozen-lockfile", "--ignore-scripts"])
+            } else if workspace.join("package-lock.json").exists() {
+                info!("Running npm ci in monorepo workspace...");
+                ("npm", vec!["ci", "--ignore-scripts"])
+            } else if workspace.join("package.json").exists() {
+                info!("Running npm install in monorepo workspace...");
+                ("npm", vec!["install", "--ignore-scripts"])
+            } else {
+                warn!("No lock file found, skipping dependency install");
+                return Ok(());
+            };
+
+        let status = Command::new(cmd)
+            .current_dir(workspace)
+            .args(&args)
+            .status()?;
+
+        if status.success() {
+            info!("{} install completed", cmd);
+        } else {
+            warn!("{} install failed (exit {:?}), proceeding anyway", cmd, status.code());
+        }
+
+        Ok(())
     }
 
     /// Run scip-java with automatic build tool disambiguation.
@@ -508,11 +751,20 @@ impl IndexerOrchestrator {
     /// Pre-download Go module dependencies (Sourcegraph pattern: go mod download pre-step).
     /// Non-fatal on failure — graceful degradation.
     fn download_go_deps(&self, module_dir: &Path) {
+        self.download_go_deps_with_env(module_dir, &None);
+    }
+
+    /// Pre-download Go module dependencies with optional GOWORK environment.
+    /// Passing GOWORK allows cross-module dependencies to resolve in workspace mode.
+    fn download_go_deps_with_env(&self, module_dir: &Path, gowork_env: &Option<String>) {
         info!("Downloading Go module dependencies for {:?}...", module_dir);
-        let status = Command::new("go")
-            .current_dir(module_dir)
-            .args(["mod", "download"])
-            .status();
+        let mut cmd = Command::new("go");
+        cmd.current_dir(module_dir)
+            .args(["mod", "download"]);
+        if let Some(ref gowork_path) = gowork_env {
+            cmd.env("GOWORK", gowork_path);
+        }
+        let status = cmd.status();
         match status {
             Ok(s) if s.success() => info!("Go modules downloaded for {:?}", module_dir),
             _ => warn!("go mod download failed for {:?}, continuing anyway", module_dir),
@@ -524,6 +776,7 @@ impl IndexerOrchestrator {
     /// in subdirectories (max depth 3) and runs scip-go from each.
     /// For go.work monorepos: copies go.work to a writable temp dir with absolute
     /// paths so cross-module imports resolve and go.work.sum can be written.
+    /// Falls back to GOWORK=off if workspace mode fails all modules.
     fn run_go_indexer(&self, output: &Path) -> Result<()> {
         let output_str = output.to_str().unwrap();
 
@@ -545,35 +798,22 @@ impl IndexerOrchestrator {
         let gowork_env = self.create_writable_gowork();
 
         info!("Found {} Go modules in subdirectories", go_mod_dirs.len());
+
+        // First pass: try with workspace context (GOWORK set)
         let mut any_success = false;
-        for (i, dir) in go_mod_dirs.iter().enumerate() {
-            // Pre-download deps for each module
-            self.download_go_deps(dir);
-
-            let sub_output = self.output_dir.join(format!("go-{}.scip", i));
-            let sub_output_str = sub_output.to_str().unwrap();
-
-            let binary = self.get_bundled_path("scip-go")
-                .unwrap_or_else(|| PathBuf::from("scip-go"));
-            let mut cmd = Command::new(&binary);
-            cmd.current_dir(dir)
-                .args(&["--output", sub_output_str]);
-            if let Some(ref gowork_path) = gowork_env {
-                cmd.env("GOWORK", gowork_path);
+        if gowork_env.is_some() {
+            any_success = self.run_go_modules_with_env(&go_mod_dirs, output, &gowork_env);
+            if !any_success {
+                warn!("All Go modules failed with workspace mode, retrying with GOWORK=off");
             }
+        }
 
-            match cmd.status().with_context(|| format!("Failed to run scip-go in {:?}", dir)) {
-                Ok(status) if status.success() => {
-                    any_success = true;
-                    // Use first successful output as the main output file
-                    if !output.exists() {
-                        std::fs::rename(&sub_output, output)
-                            .context("Failed to rename Go sub-output")?;
-                    }
-                }
-                Ok(status) => warn!("scip-go failed for {:?}: exit status {:?}", dir, status.code()),
-                Err(e) => warn!("scip-go failed for {:?}: {}", dir, e),
-            }
+        // Second pass: if workspace mode failed (or no go.work), try GOWORK=off
+        // Each module is indexed independently — less cross-module precision but
+        // still captures intra-module symbols and references.
+        if !any_success {
+            let gowork_off = Some("off".to_string());
+            any_success = self.run_go_modules_with_env(&go_mod_dirs, output, &gowork_off);
         }
 
         if any_success {
@@ -581,6 +821,100 @@ impl IndexerOrchestrator {
         } else {
             Err(anyhow!("All Go module indexing failed"))
         }
+    }
+
+    /// Run scip-go on each Go module directory with a given GOWORK environment.
+    /// Returns true if at least one module was indexed successfully.
+    fn run_go_modules_with_env(
+        &self, go_mod_dirs: &[PathBuf], output: &Path, gowork_env: &Option<String>,
+    ) -> bool {
+        let mut any_success = false;
+        for (i, dir) in go_mod_dirs.iter().enumerate() {
+            // Create a writable copy of the module directory.
+            // The codebase mount is read-only, but `go mod download` needs to write
+            // go.sum, and scip-go may need to write temporary files.
+            let writable_dir = self.create_writable_go_module(dir, i);
+            let work_dir = writable_dir.as_deref().unwrap_or(dir);
+
+            // Pre-download deps — pass GOWORK so cross-module deps resolve
+            self.download_go_deps_with_env(work_dir, gowork_env);
+
+            let sub_output = self.output_dir.join(format!("go-{}.scip", i));
+            let sub_output_str = sub_output.to_str().unwrap();
+
+            let binary = self.get_bundled_path("scip-go")
+                .unwrap_or_else(|| PathBuf::from("scip-go"));
+            let mut cmd = Command::new(&binary);
+            // Run scip-go from the ORIGINAL module directory, not the writable copy.
+            // Go resolves modules by walking up from a file's real path (through symlinks),
+            // so it never finds go.mod in the writable dir with symlinked sources.
+            cmd.current_dir(dir)
+                .args(&["--output", sub_output_str]);
+            if let Some(ref gowork_path) = gowork_env {
+                cmd.env("GOWORK", gowork_path);
+            }
+
+            match cmd.output().with_context(|| format!("Failed to run scip-go in {:?}", dir)) {
+                Ok(output_result) if output_result.status.success() => {
+                    any_success = true;
+                    info!("scip-go succeeded for {:?}", dir);
+                    // Use first successful output as the main output file
+                    if !output.exists() {
+                        if let Err(e) = std::fs::rename(&sub_output, output) {
+                            warn!("Failed to rename Go sub-output: {}", e);
+                        }
+                    }
+                }
+                Ok(output_result) => {
+                    let stderr = String::from_utf8_lossy(&output_result.stderr);
+                    warn!("scip-go failed for {:?}: exit status {:?}\nstderr: {}", dir, output_result.status.code(), stderr);
+                }
+                Err(e) => warn!("scip-go failed for {:?}: {}", dir, e),
+            }
+        }
+        any_success
+    }
+
+    /// Create a writable copy of a Go module directory so go.sum can be written.
+    /// Uses symlinks for source files to minimize disk usage and I/O.
+    /// Returns the writable directory path, or None if creation fails.
+    fn create_writable_go_module(&self, module_dir: &Path, index: usize) -> Option<PathBuf> {
+        let writable = self.output_dir.join(format!("go-mod-{}", index));
+        if let Err(e) = std::fs::create_dir_all(&writable) {
+            warn!("Failed to create writable Go module dir: {}", e);
+            return None;
+        }
+
+        // Copy go.mod and go.sum (these need to be writable)
+        for name in &["go.mod", "go.sum"] {
+            let src = module_dir.join(name);
+            if src.exists() {
+                let _ = std::fs::copy(&src, writable.join(name));
+            }
+        }
+
+        // Symlink all other directories and files from the original module
+        match std::fs::read_dir(module_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str == "go.mod" || name_str == "go.sum" {
+                        continue; // Already copied above
+                    }
+                    let target = writable.join(&name);
+                    if !target.exists() {
+                        let _ = std::os::unix::fs::symlink(entry.path(), &target);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to read Go module dir {:?}: {}", module_dir, e);
+                return None;
+            }
+        }
+
+        Some(writable)
     }
 
     /// Copy go.work to a writable temp dir, converting relative paths to absolute.
@@ -698,6 +1032,11 @@ impl IndexerOrchestrator {
             workspace.join("composer.json"),
         ).context("Failed to copy composer.json")?;
 
+        // Augment autoload config so scip-php discovers files outside registered PSR-4 roots
+        if let Err(e) = self.augment_php_autoload(&workspace) {
+            warn!("Failed to augment PHP autoload (non-fatal): {}", e);
+        }
+
         // Run composer install to generate vendor/autoload.php
         info!("Running composer install in PHP workspace");
         let composer_status = Command::new("composer")
@@ -712,6 +1051,151 @@ impl IndexerOrchestrator {
 
         // Run scip-php from the workspace (writes index.scip to cwd, then we move it)
         self.run_indexer_and_move("scip-php", &[], &workspace, output)
+    }
+
+    /// Augment composer.json autoload so scip-php discovers PHP files outside
+    /// the registered PSR-4/PSR-0 roots.  Many projects (e.g. Appwrite) only
+    /// register `src/` in autoload but have controllers in `app/`, scripts in
+    /// `bin/`, etc.  We add uncovered directories to `autoload.classmap`.
+    ///
+    /// IMPORTANT: We only use `classmap` (scanned statically for class/interface/trait
+    /// declarations) — NOT `files` (which Composer `require()`s at bootstrap time).
+    /// Adding procedural PHP files to `files` causes fatal crashes when those files
+    /// reference runtime constants or functions not yet defined (e.g. Appwrite's
+    /// `app/init/database/formats.php` uses `APP_DATABASE_ATTRIBUTE_EMAIL`).
+    ///
+    /// Only modifies the *workspace* copy — the real codebase is never touched.
+    fn augment_php_autoload(&self, workspace: &Path) -> Result<()> {
+        let composer_path = workspace.join("composer.json");
+        let raw = std::fs::read_to_string(&composer_path)
+            .context("Failed to read workspace composer.json")?;
+        let mut root: serde_json::Value =
+            serde_json::from_str(&raw).context("Failed to parse composer.json")?;
+
+        // Collect directories already covered by existing autoload entries
+        let mut covered_prefixes: Vec<String> = Vec::new();
+        if let Some(autoload) = root.get("autoload") {
+            for key in &["psr-4", "psr-0", "classmap"] {
+                if let Some(section) = autoload.get(key) {
+                    match section {
+                        serde_json::Value::Object(map) => {
+                            for v in map.values() {
+                                match v {
+                                    serde_json::Value::String(s) => {
+                                        covered_prefixes.push(s.trim_end_matches('/').to_string());
+                                    }
+                                    serde_json::Value::Array(arr) => {
+                                        for item in arr {
+                                            if let Some(s) = item.as_str() {
+                                                covered_prefixes.push(s.trim_end_matches('/').to_string());
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        serde_json::Value::Array(arr) => {
+                            for item in arr {
+                                if let Some(s) = item.as_str() {
+                                    covered_prefixes.push(s.trim_end_matches('/').to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Walk the real codebase looking for .php files not covered by existing autoload
+        let mut uncovered_dirs: Vec<String> = Vec::new();
+        let mut seen_dirs = std::collections::HashSet::new();
+
+        for entry in walkdir::WalkDir::new(&self.codebase_path)
+            .max_depth(6)
+            .into_iter()
+            .flatten()
+        {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("php") {
+                continue;
+            }
+
+            // Build relative path from codebase root
+            let rel = match path.strip_prefix(&self.codebase_path) {
+                Ok(r) => r.to_string_lossy().to_string(),
+                Err(_) => continue,
+            };
+
+            // Skip vendor/ and tests/ directories
+            if rel.starts_with("vendor/") || rel.starts_with("tests/") || rel.starts_with("test/") {
+                continue;
+            }
+
+            // Check if already covered by an existing autoload prefix
+            let is_covered = covered_prefixes.iter().any(|prefix| {
+                rel.starts_with(prefix) || rel.starts_with(&format!("{}/", prefix))
+            });
+            if is_covered {
+                continue;
+            }
+
+            // Add the containing directory to classmap (scanned statically, not executed)
+            if let Some(parent) = path.parent() {
+                if let Ok(rel_dir) = parent.strip_prefix(&self.codebase_path) {
+                    let dir_str = rel_dir.to_string_lossy().to_string();
+                    if !dir_str.is_empty() && seen_dirs.insert(dir_str.clone()) {
+                        uncovered_dirs.push(dir_str);
+                    }
+                }
+            }
+        }
+
+        if uncovered_dirs.is_empty() {
+            info!("PHP autoload: all PHP files already covered by existing autoload entries");
+            return Ok(());
+        }
+
+        info!(
+            "PHP autoload augmentation: adding {} directories to classmap",
+            uncovered_dirs.len()
+        );
+
+        // Ensure autoload section exists
+        let autoload = root
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("composer.json root is not an object"))?
+            .entry("autoload")
+            .or_insert_with(|| serde_json::json!({}));
+
+        let autoload_obj = autoload
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("autoload is not an object"))?;
+
+        // Add uncovered directories to classmap only.
+        // classmap is scanned statically for class/interface/trait declarations
+        // without executing the PHP files, so it's safe even for files with
+        // runtime dependencies.
+        let classmap = autoload_obj
+            .entry("classmap")
+            .or_insert_with(|| serde_json::json!([]));
+        if let Some(arr) = classmap.as_array_mut() {
+            for dir in &uncovered_dirs {
+                arr.push(serde_json::Value::String(dir.clone()));
+            }
+        }
+
+        // Write modified composer.json back to workspace
+        let output = serde_json::to_string_pretty(&root)
+            .context("Failed to serialize modified composer.json")?;
+        std::fs::write(&composer_path, output)
+            .context("Failed to write augmented composer.json")?;
+
+        Ok(())
     }
 
     /// Run scip-clang indexer.

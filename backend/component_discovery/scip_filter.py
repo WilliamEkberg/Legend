@@ -67,6 +67,32 @@ def _file_in_module(file_path: str, dir_prefixes: list[str]) -> bool:
     return False
 
 
+def _detect_path_prefix(raw_paths: list[str], module_dirs: list[str]) -> str:
+    """Detect a common prefix in SCIP paths that should be stripped.
+
+    SCIP indexers produce paths relative to their working directory, which may
+    include the repo directory name (e.g. ``Legend/backend/main.py`` instead of
+    ``backend/main.py``) or even ``../`` components (TypeScript workspace).
+
+    Strategy: for each module dir, check if any SCIP path contains it.  If it
+    does but doesn't start with it, the characters before the module dir are
+    the prefix to strip.
+    """
+    if not raw_paths or not module_dirs:
+        return ""
+
+    # Normalize module dirs — strip trailing /
+    normalized_dirs = [d.rstrip("/") + "/" for d in module_dirs]
+
+    # Find the prefix by looking for a module dir inside raw paths
+    for nd in normalized_dirs:
+        for rp in raw_paths:
+            idx = rp.find(nd)
+            if idx > 0:
+                return rp[:idx]
+    return ""
+
+
 def parse_scip_for_module(scip_path: str | list[str], module_dirs: list[str]) -> dict:
     """
     Parse one or more SCIP index files and extract edges scoped to one module.
@@ -91,6 +117,10 @@ def parse_scip_for_module(scip_path: str | list[str], module_dirs: list[str]) ->
     with open(scip_path, "rb") as f:
         index.ParseFromString(f.read())
 
+    # Detect and strip path prefix (e.g. "Legend/" or "../../../workspace/Legend/")
+    raw_paths = [doc.relative_path for doc in index.documents]
+    prefix = _detect_path_prefix(raw_paths, module_dirs)
+
     # Pass 1: collect definitions, symbol kinds, relationships
     symbol_to_file = {}
     symbol_to_kind = {}
@@ -100,6 +130,8 @@ def parse_scip_for_module(scip_path: str | list[str], module_dirs: list[str]) ->
 
     for doc in index.documents:
         file_path = doc.relative_path
+        if prefix and file_path.startswith(prefix):
+            file_path = file_path[len(prefix):]
         all_files.add(file_path)
 
         for sym_info in doc.symbols:
