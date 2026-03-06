@@ -53,7 +53,7 @@ RUN echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | tee /etc/ap
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================
-# Node.js 20 + pnpm + n version manager
+# Node.js 20 + pnpm + yarn + n version manager
 # ============================================
 # Install Node 20 from official binary (NodeSource apt repo is flaky)
 RUN case "${TARGETARCH}" in \
@@ -63,7 +63,7 @@ RUN case "${TARGETARCH}" in \
     esac \
     && curl -fsSL "https://nodejs.org/dist/v20.18.3/node-v20.18.3-linux-${NODE_ARCH}.tar.xz" \
     | tar -xJ --strip-components=1 -C /usr/local \
-    && npm install -g pnpm
+    && npm install -g pnpm yarn
 
 # Install 'n' version manager for runtime Node.js switching
 # Pre-install Node 22 LTS alongside Node 20 (covers ~95% of modern repos)

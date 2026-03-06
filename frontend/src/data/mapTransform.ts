@@ -30,8 +30,7 @@ const GROUP_PADDING = 40;
 const GROUP_LABEL_HEIGHT = 24;
 const REPULSION_STRENGTH = -2000;
 
-// ── Hierarchical layout constants ──
-const LAYER_GAP = COMPONENT_NODE_H + 60;
+// ── Layout constants ──
 const HORIZONTAL_GAP = 40;
 
 // ── Handle selection helper ──
@@ -71,9 +70,9 @@ function assignEdgeHandles(
 // ── Color map by classification ──
 
 const CLASSIFICATION_COLORS: Record<string, string> = {
-  module: "#00e5ff",
-  "shared-library": "#bd93f9",
-  "supporting-asset": "#ffb300",
+  module: "hsl(150 40% 35%)",
+  "shared-library": "hsl(280 45% 55%)",
+  "supporting-asset": "hsl(35 70% 50%)",
 };
 
 function classificationColor(classification: string): string {
@@ -155,147 +154,11 @@ interface GroupSimNode extends SimulationNodeDatum {
 
 const GROUP_GAP = 30;
 
-// ── Phase 1: Per-module hierarchical layout ──
+// ── Phase 1: Per-module force-directed layout ──
 
-/**
- * Find connected components in an undirected graph.
- */
-function findConnectedComponents(
-  nodeIds: number[],
-  adj: Map<number, Set<number>>
-): number[][] {
-  const visited = new Set<number>();
-  const components: number[][] = [];
-
-  for (const start of nodeIds) {
-    if (visited.has(start)) continue;
-    const component: number[] = [];
-    const stack = [start];
-    while (stack.length > 0) {
-      const node = stack.pop()!;
-      if (visited.has(node)) continue;
-      visited.add(node);
-      component.push(node);
-      const neighbors = adj.get(node);
-      if (neighbors) {
-        for (const n of neighbors) {
-          if (!visited.has(n)) stack.push(n);
-        }
-      }
-    }
-    components.push(component);
-  }
-  return components;
-}
-
-/**
- * BFS layer assignment from the highest-degree node in a connected component.
- * Returns map: nodeId -> layer index (0 = core/top).
- */
-function assignLayers(
-  componentNodes: number[],
-  adj: Map<number, Set<number>>,
-  weightedDegree: Map<number, number>
-): Map<number, number> {
-  // Start from the node with highest weighted degree (the "core")
-  let coreNode = componentNodes[0];
-  let maxDeg = weightedDegree.get(coreNode) ?? 0;
-  for (const id of componentNodes) {
-    const deg = weightedDegree.get(id) ?? 0;
-    if (deg > maxDeg) {
-      maxDeg = deg;
-      coreNode = id;
-    }
-  }
-
-  const layers = new Map<number, number>();
-  layers.set(coreNode, 0);
-  const queue = [coreNode];
-  let head = 0;
-
-  while (head < queue.length) {
-    const node = queue[head++];
-    const currentLayer = layers.get(node)!;
-    const neighbors = adj.get(node);
-    if (!neighbors) continue;
-    for (const n of neighbors) {
-      if (!layers.has(n)) {
-        layers.set(n, currentLayer + 1);
-        queue.push(n);
-      }
-    }
-  }
-
-  return layers;
-}
-
-/**
- * Group nodes by layer index.
- */
-function groupByLayer(layers: Map<number, number>): Map<number, number[]> {
-  const result = new Map<number, number[]>();
-  for (const [nodeId, layer] of layers) {
-    const arr = result.get(layer) ?? [];
-    arr.push(nodeId);
-    result.set(layer, arr);
-  }
-  return result;
-}
-
-/**
- * Barycenter ordering: order nodes in each layer to minimize edge crossings
- * by placing each node at the average position of its neighbors in the adjacent layer.
- * Two passes: top-down then bottom-up.
- */
-function orderLayers(
-  layerGroups: Map<number, number[]>,
-  adj: Map<number, Set<number>>
-): Map<number, number[]> {
-  const maxLayer = Math.max(...layerGroups.keys());
-
-  // Build nodeId -> layer lookup for O(1) access
-  const nodeToLayer = new Map<number, number>();
-  for (const [layer, nodes] of layerGroups) {
-    for (const id of nodes) nodeToLayer.set(id, layer);
-  }
-
-  // Build position lookup: nodeId -> index within its layer
-  const posInLayer = new Map<number, number>();
-  for (const [, nodes] of layerGroups) {
-    nodes.forEach((id, i) => posInLayer.set(id, i));
-  }
-
-  function sortLayer(l: number, refLayer: number) {
-    const nodes = layerGroups.get(l);
-    if (!nodes || nodes.length <= 1) return;
-
-    const barycenters = nodes.map((id) => {
-      const neighbors = adj.get(id);
-      if (!neighbors) return { id, bc: 0 };
-      let sum = 0;
-      let count = 0;
-      for (const n of neighbors) {
-        if (nodeToLayer.get(n) === refLayer) {
-          sum += posInLayer.get(n) ?? 0;
-          count++;
-        }
-      }
-      return { id, bc: count > 0 ? sum / count : posInLayer.get(id) ?? 0 };
-    });
-
-    barycenters.sort((a, b) => a.bc - b.bc);
-    const sorted = barycenters.map((b) => b.id);
-    layerGroups.set(l, sorted);
-    sorted.forEach((id, i) => posInLayer.set(id, i));
-  }
-
-  // Top-down pass: order each layer based on positions in previous layer
-  for (let l = 1; l <= maxLayer; l++) sortLayer(l, l - 1);
-
-  // Bottom-up pass: refine based on positions in next layer
-  for (let l = maxLayer - 1; l >= 0; l--) sortLayer(l, l + 1);
-
-  return layerGroups;
+interface CompSimNode extends SimulationNodeDatum {
+  id: number;
+  degree: number;
 }
 
 function layoutModule(
@@ -315,52 +178,34 @@ function layoutModule(
     };
   }
 
-  // Build adjacency and weighted degree
+  // Build edges and degree
   const nodeSet = new Set(compIds);
-  const adj = new Map<number, Set<number>>();
-  const weightedDegree = new Map<number, number>();
-  for (const id of compIds) {
-    adj.set(id, new Set());
-    weightedDegree.set(id, 0);
-  }
-
+  const degreeMap = new Map<number, number>();
   const seenEdges = new Set<string>();
   let edgeCount = 0;
+
   for (const e of intraEdges) {
     if (!nodeSet.has(e.source_id) || !nodeSet.has(e.target_id)) continue;
     const key = `${Math.min(e.source_id, e.target_id)}-${Math.max(e.source_id, e.target_id)}`;
     if (seenEdges.has(key)) continue;
     seenEdges.add(key);
     edgeCount++;
-    adj.get(e.source_id)!.add(e.target_id);
-    adj.get(e.target_id)!.add(e.source_id);
-    const w = e.weight ?? 1;
-    weightedDegree.set(e.source_id, (weightedDegree.get(e.source_id) ?? 0) + w);
-    weightedDegree.set(e.target_id, (weightedDegree.get(e.target_id) ?? 0) + w);
+    degreeMap.set(e.source_id, (degreeMap.get(e.source_id) ?? 0) + 1);
+    degreeMap.set(e.target_id, (degreeMap.get(e.target_id) ?? 0) + 1);
   }
 
-  // Separate connected and disconnected components
-  const connectedNodes = new Set<number>();
-  for (const id of compIds) {
-    if ((adj.get(id)?.size ?? 0) > 0) connectedNodes.add(id);
-  }
-  const disconnected = compIds.filter((id) => !connectedNodes.has(id));
-  const connected = compIds.filter((id) => connectedNodes.has(id));
-
-  // All disconnected: grid layout
-  if (connected.length === 0) {
+  // No edges: grid layout
+  if (edgeCount === 0) {
     const positions = new Map<number, { x: number; y: number }>();
-    const cols = Math.ceil(Math.sqrt(compIds.length));
-    for (let i = 0; i < compIds.length; i++) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
+    const cols = Math.ceil(Math.sqrt(n));
+    for (let i = 0; i < n; i++) {
       positions.set(compIds[i], {
-        x: col * (COMPONENT_NODE_W + HORIZONTAL_GAP),
-        y: row * (COMPONENT_NODE_H + HORIZONTAL_GAP),
+        x: (i % cols) * (COMPONENT_NODE_W + HORIZONTAL_GAP),
+        y: Math.floor(i / cols) * (COMPONENT_NODE_H + HORIZONTAL_GAP),
       });
     }
-    const totalCols = Math.min(compIds.length, cols);
-    const totalRows = Math.ceil(compIds.length / cols);
+    const totalCols = Math.min(n, cols);
+    const totalRows = Math.ceil(n / cols);
     return {
       moduleId: mod.id,
       positions,
@@ -372,73 +217,59 @@ function layoutModule(
     };
   }
 
-  // Find connected subgraphs and lay each out independently
-  const subgraphs = findConnectedComponents(connected, adj);
-  const allPositions = new Map<number, { x: number; y: number }>();
-  let offsetX = 0;
-  let maxH = 0;
+  // Force-directed simulation
+  const simNodes: CompSimNode[] = compIds.map((id) => ({
+    id,
+    degree: degreeMap.get(id) ?? 0,
+  }));
+  const nodeById = new Map(simNodes.map((sn) => [sn.id, sn]));
 
-  for (const subNodes of subgraphs) {
-    // Layer assignment via BFS from highest-degree node
-    const layers = assignLayers(subNodes, adj, weightedDegree);
-    const layerGroups = groupByLayer(layers);
-    const orderedLayers = orderLayers(layerGroups, adj);
+  const simLinks: SimulationLinkDatum<CompSimNode>[] = [...seenEdges].map((key) => {
+    const [srcId, tgtId] = key.split("-").map(Number);
+    return { source: nodeById.get(srcId)!, target: nodeById.get(tgtId)! };
+  });
 
-    // Position nodes
-    const maxLayer = Math.max(...orderedLayers.keys());
-    let subMaxW = 0;
+  const collideRadius = Math.sqrt(COMPONENT_NODE_W ** 2 + COMPONENT_NODE_H ** 2) / 2 + 30;
+  const maxDegree = Math.max(...simNodes.map((sn) => sn.degree), 1);
 
-    for (let l = 0; l <= maxLayer; l++) {
-      const nodes = orderedLayers.get(l) ?? [];
-      const layerWidth = nodes.length * COMPONENT_NODE_W + (nodes.length - 1) * HORIZONTAL_GAP;
-      subMaxW = Math.max(subMaxW, layerWidth);
-    }
+  const simulation = forceSimulation(simNodes)
+    .force(
+      "link",
+      forceLink<CompSimNode, SimulationLinkDatum<CompSimNode>>(simLinks)
+        .distance(320)
+        .strength(0.25)
+    )
+    .force("charge", forceManyBody<CompSimNode>().strength(-1800))
+    .force(
+      "collide",
+      forceCollide<CompSimNode>(collideRadius).strength(1).iterations(2)
+    )
+    .force("center", forceCenter(0, 0).strength(0.08))
+    .force("x", forceX<CompSimNode>(0).strength((d) =>
+      d.degree === 0 ? 0.12 : 0.03 + 0.06 * (d.degree / maxDegree)
+    ))
+    .force("y", forceY<CompSimNode>(0).strength((d) =>
+      d.degree === 0 ? 0.12 : 0.03 + 0.06 * (d.degree / maxDegree)
+    ))
+    .stop();
 
-    // Center each layer within the subgraph width
-    for (let l = 0; l <= maxLayer; l++) {
-      const nodes = orderedLayers.get(l) ?? [];
-      const layerWidth = nodes.length * COMPONENT_NODE_W + (nodes.length - 1) * HORIZONTAL_GAP;
-      const startX = offsetX + (subMaxW - layerWidth) / 2;
-      for (let i = 0; i < nodes.length; i++) {
-        allPositions.set(nodes[i], {
-          x: startX + i * (COMPONENT_NODE_W + HORIZONTAL_GAP),
-          y: l * LAYER_GAP,
-        });
-      }
-    }
+  for (let i = 0; i < 200; i++) simulation.tick();
 
-    const subH = (maxLayer + 1) * LAYER_GAP - LAYER_GAP + COMPONENT_NODE_H;
-    maxH = Math.max(maxH, subH);
-    offsetX += subMaxW + HORIZONTAL_GAP * 2;
-  }
-
-  // Place disconnected nodes in grid below the hierarchy
-  if (disconnected.length > 0) {
-    const gridY = maxH + LAYER_GAP;
-    const cols = Math.ceil(Math.sqrt(disconnected.length));
-    for (let i = 0; i < disconnected.length; i++) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      allPositions.set(disconnected[i], {
-        x: col * (COMPONENT_NODE_W + HORIZONTAL_GAP),
-        y: gridY + row * (COMPONENT_NODE_H + HORIZONTAL_GAP),
-      });
-    }
-    const gridRows = Math.ceil(disconnected.length / cols);
-    maxH = gridY + gridRows * COMPONENT_NODE_H + (gridRows - 1) * HORIZONTAL_GAP;
-  }
-
-  // Normalize positions so top-left is (0, 0) + compute bbox
+  // Normalize to (0,0) origin
   let minX = Infinity, minY = Infinity, maxXEnd = -Infinity, maxYEnd = -Infinity;
-  for (const pos of allPositions.values()) {
-    minX = Math.min(minX, pos.x);
-    minY = Math.min(minY, pos.y);
-    maxXEnd = Math.max(maxXEnd, pos.x + COMPONENT_NODE_W);
-    maxYEnd = Math.max(maxYEnd, pos.y + COMPONENT_NODE_H);
+  for (const sn of simNodes) {
+    minX = Math.min(minX, sn.x ?? 0);
+    minY = Math.min(minY, sn.y ?? 0);
+    maxXEnd = Math.max(maxXEnd, (sn.x ?? 0) + COMPONENT_NODE_W);
+    maxYEnd = Math.max(maxYEnd, (sn.y ?? 0) + COMPONENT_NODE_H);
   }
+
   const positions = new Map<number, { x: number; y: number }>();
-  for (const [id, pos] of allPositions) {
-    positions.set(id, { x: pos.x - minX, y: pos.y - minY });
+  for (const sn of simNodes) {
+    positions.set(sn.id, {
+      x: (sn.x ?? 0) - minX,
+      y: (sn.y ?? 0) - minY,
+    });
   }
 
   return {
@@ -631,11 +462,8 @@ function buildL3(
       style: {
         width: box.w,
         height: box.h,
-        backgroundColor: `${classificationColor(mod.classification)}08`,
-        borderColor: `${classificationColor(mod.classification)}40`,
-        borderWidth: 2,
-        borderStyle: "solid" as const,
-        borderRadius: 16,
+        border: "none",
+        background: "transparent",
       },
     };
     nodes.push(groupNode);
@@ -669,6 +497,7 @@ function buildL3(
         data: {
           label: comp.name,
           moduleName: mod.name,
+          classification: mod.classification,
           purpose: comp.purpose,
           confidence: comp.confidence,
           decisions: comp.decisions,

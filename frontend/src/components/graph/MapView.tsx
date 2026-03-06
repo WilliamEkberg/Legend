@@ -296,7 +296,6 @@ function MapViewInner() {
     transformMapData(mapData, level, filters)
       .then(({ nodes: n, edges: e }) => {
         if (cancelled) return;
-        console.log("[MapView] transform result:", n.length, "nodes,", e.length, "edges");
         setNodes(n);
         setEdges(e);
         setSelectedNode(null);
@@ -321,12 +320,10 @@ function MapViewInner() {
   // Derive set of node IDs that have pending decision changes
   const changedNodeIds = useMemo(() => {
     const ids = new Set<string>();
-    console.log("[MapView] changeRecords:", changeRecords.length, changeRecords.map(r => ({ id: r.id, context: r.context })));
     for (const rec of changeRecords) {
       if (rec.context?.module_id != null) ids.add(`module-${rec.context.module_id}`);
       if (rec.context?.component_id != null) ids.add(`component-${rec.context.component_id}`);
     }
-    console.log("[MapView] changedNodeIds:", [...ids]);
     return ids;
   }, [changeRecords]);
 

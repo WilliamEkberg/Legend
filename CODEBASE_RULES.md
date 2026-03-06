@@ -1,6 +1,6 @@
 # Project Documentation Guide
 
-info_[Name].md- This projects sourse of truth is the md fles in the Natural_Language_Code folder. This is the primary code and shuld be detailed enogh to be able to build tha actual code without more context. Code examples can be part of it but shuld be limited to short parts that are sensitive. When we work we first look in these md files and edit in them untill we are satisfied with the solution, then we implement the actual code.
+info_[Name].md- This projects source of truth is the md files in the Natural_Language_Code folder. This is the primary code and should be detailed enough to be able to build the actual code without more context. Code examples can be part of it but should be limited to short parts that are sensitive. When we work we first look in these md files and edit in them until we are satisfied with the solution, then we implement the actual code.
 
 ## Natural_Language_Code folder
 
@@ -94,7 +94,7 @@ Use `_TEMPLATE.md` as your starting point. Copy it and fill in the sections.
 | Section | Purpose |
 |---------|---------|
 | **Planned Changes** | Checkboxes for current work items |
-| **Log** | Running log: `YYYY-MM-DD :: author :: note` | (author refers to the user reponsable for the AI)
+| **Log** | Running log: `YYYY-MM-DD :: author :: note` | (author refers to the user responsible for the AI)
 
 ### Optional Sections (add when relevant)
 
@@ -114,6 +114,6 @@ Use `_TEMPLATE.md` as your starting point. Copy it and fill in the sections.
 
 # Writing tests:
 When you write tests make sure to put them in a test folder as a subfolder for where we are working so they are easy to find and use.
-They shuld have:
+They should have:
 - An sh file to run them easally
 - A readme file with a short explination of what is tested

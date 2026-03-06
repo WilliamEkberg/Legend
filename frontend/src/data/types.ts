@@ -78,6 +78,7 @@ export interface ModuleNodeData {
 export interface ComponentNodeData {
   label: string;
   moduleName: string;
+  classification: string;
   purpose: string;
   confidence: number;
   decisions: MapDecision[];

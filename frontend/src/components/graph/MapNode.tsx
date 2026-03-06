@@ -28,7 +28,7 @@ export const MapNode = memo(function MapNode({ data, selected }: NodeProps) {
 
   const borderColor = isModule
     ? CLASSIFICATION_COLOR[nodeData.classification] ?? CLASSIFICATION_COLOR.module
-    : "hsl(var(--node-component))";
+    : CLASSIFICATION_COLOR.module;
 
   return (
     <div

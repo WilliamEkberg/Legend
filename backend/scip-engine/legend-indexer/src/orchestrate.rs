@@ -204,13 +204,13 @@ impl IndexerOrchestrator {
         let has_root_tsconfig = self.codebase_path.join("tsconfig.json").exists();
 
         // Detect monorepo workspace type for scip-typescript flags.
-        // Only pass --pnpm-workspaces if pnpm is actually installed (scip-typescript
-        // calls `pnpm ls` which crashes hard if pnpm is missing).
+        // Only pass workspace flags if the corresponding package manager is installed
+        // (scip-typescript calls the PM directly and crashes hard if it's missing).
         let workspace_flag = if self.codebase_path.join("pnpm-workspace.yaml").exists()
             && which::which("pnpm").is_ok()
         {
             Some("--pnpm-workspaces")
-        } else if self.has_package_json_workspaces() {
+        } else if self.has_package_json_workspaces() && which::which("yarn").is_ok() {
             Some("--yarn-workspaces")
         } else {
             None

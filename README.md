@@ -27,27 +27,27 @@ The pipeline runs in stages, with two human review points between them:
 ### Landing Page
 Configure your API key, repository path, provider, and model — then run the pipeline to build your architecture map.
 
-![Landing Page](Screanshots/landing-page.png)
+![Landing Page](Screenshots/landing-page.png)
 
 ### Architecture Map
 Visualize your entire codebase as an interactive node graph showing modules, components, and their relationships.
 
-![Architecture Map](Screanshots/architecture-map.png)
+![Architecture Map](Screenshots/architecture-map.png)
 
 ### Component Detail
 Click any node to inspect its purpose, confidence score, decisions, API contracts, data flow, and associated files.
 
-![Component Detail](Screanshots/component-detail.png)
+![Component Detail](Screenshots/component-detail.png)
 
 ### Decision Editing
 Edit architectural decisions directly on the map — changes are tracked through re-validation.
 
-![Decision Editing](Screanshots/decision-editing.png)
+![Decision Editing](Screenshots/decision-editing.png)
 
 ### Generated Tickets
 AI-generated tickets based on architectural decisions, ready to copy or download. Paste in the tickets to Linear or directly to claude code
 
-![Generated Ticket](Screanshots/generated-ticket.png)
+![Generated Ticket](Screenshots/generated-ticket.png)
 
 ## Tech Stack
 

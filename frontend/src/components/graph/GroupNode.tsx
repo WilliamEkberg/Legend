@@ -7,12 +7,13 @@ import type { GroupNodeData } from "../../data/types";
 export const GroupNode = memo(function GroupNode({ data }: NodeProps) {
   const { label, color } = data as GroupNodeData;
 
+  const bgColor = color.replace(")", " / 0.06)");
+
   return (
     <div
-      className="rounded-2xl border-2 border-dashed p-4 min-w-[200px] min-h-[100px]"
+      className="w-full h-full relative rounded-2xl"
       style={{
-        borderColor: color,
-        backgroundColor: `${color}10`,
+        backgroundColor: bgColor,
       }}
     >
       <Handle type="target" position={Position.Top} id="top" className="!w-0 !h-0 !bg-transparent !border-none" />
@@ -24,7 +25,15 @@ export const GroupNode = memo(function GroupNode({ data }: NodeProps) {
       <Handle type="source" position={Position.Left} id="left" className="!w-0 !h-0 !bg-transparent !border-none" />
       <Handle type="source" position={Position.Right} id="right" className="!w-0 !h-0 !bg-transparent !border-none" />
 
-      <div className="text-sm font-semibold" style={{ color }}>
+      {/* Module name badge — top center on the border */}
+      <div
+        className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 px-4 py-1 rounded-md text-sm font-bold uppercase tracking-wide whitespace-nowrap"
+        style={{
+          color,
+          backgroundColor: "hsl(var(--background))",
+          border: `1.5px solid ${color}`,
+        }}
+      >
         {label}
       </div>
     </div>
