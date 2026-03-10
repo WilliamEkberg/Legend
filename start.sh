@@ -132,11 +132,6 @@ fi
 echo "Installing backend dependencies..."
 pip install -q -r "$ROOT_DIR/backend/requirements.txt"
 
-# Set up pre-commit hooks if not already installed
-#if [ -f "$ROOT_DIR/.pre-commit-config.yaml" ] && [ ! -f "$ROOT_DIR/.git/hooks/pre-commit" ]; then
-#    echo "Setting up pre-commit hooks..."
-#    cd "$ROOT_DIR" && pre-commit install
-#fi
 
 # Install frontend deps if needed
 if [ ! -d "$ROOT_DIR/frontend/node_modules" ]; then
@@ -154,7 +149,12 @@ if command -v docker &>/dev/null; then
         echo "Warning: Docker is installed but the daemon is not running."
         echo "  SCIP indexing will fall back to local binaries."
         echo "  Start Docker to enable containerized SCIP indexing."
-    elif ! docker image inspect "$SCIP_LOCAL_IMAGE" &>/dev/null 2>&1; then
+    elif docker image inspect "$SCIP_LOCAL_IMAGE" &>/dev/null 2>&1; then
+        echo "SCIP engine image found locally."
+    elif docker image inspect "$SCIP_REGISTRY_IMAGE" &>/dev/null 2>&1; then
+        echo "Registry image found locally, tagging as '$SCIP_LOCAL_IMAGE'."
+        docker tag "$SCIP_REGISTRY_IMAGE" "$SCIP_LOCAL_IMAGE"
+    else
         echo "SCIP engine image not found locally."
         echo "Attempting to pull from GitHub Container Registry..."
 
@@ -181,8 +181,6 @@ if command -v docker &>/dev/null; then
             echo "Building SCIP engine image..."
             docker build -t "$SCIP_LOCAL_IMAGE" "$ROOT_DIR/backend/scip-engine/legend-indexer"
         fi
-    else
-        echo "SCIP engine image found locally."
     fi
 else
     echo "Warning: Docker not found. SCIP indexing will fall back to local binaries."

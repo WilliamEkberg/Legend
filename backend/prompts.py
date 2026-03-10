@@ -219,17 +219,3 @@ The codebase is at `{project_dir}`. Read manifest files there to find dependenci
 The output must be valid JSON matching the schema above. Do not create any other files.
 Even if there are no edges, still write the file with `{{"edges": [], "consumedBy": []}}`.
 """
-
-
-# ---------------------------------------------------------------------------
-# Legacy API — used by the non-streaming /api/run endpoint
-# ---------------------------------------------------------------------------
-
-def system_prompt():
-    """Legacy: combined system prompt for single-pass classification."""
-    return modules_system_prompt()
-
-
-def variables_prompt(project_dir, output_dir, cwd, provider, model, timestamp):
-    """Legacy: single-pass variables prompt."""
-    return modules_variables_prompt(project_dir, output_dir)

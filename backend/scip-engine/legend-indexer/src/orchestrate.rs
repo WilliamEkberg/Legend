@@ -113,8 +113,6 @@ impl IndexerOrchestrator {
             Language::Python => self.run_python_indexer(&scip_output),
             Language::CSharp => self.run_dotnet_indexer(&scip_output),
             Language::Java | Language::Kotlin | Language::Scala => {
-                // Ensure gradle/maven wrappers are executable (git can strip +x on clone)
-                self.fix_build_wrapper_permissions();
                 self.run_java_indexer(&scip_output)
             }
             Language::Go => self.run_go_indexer(&scip_output),
@@ -194,62 +192,46 @@ impl IndexerOrchestrator {
         results
     }
 
-    /// Run scip-typescript indexer with two-phase strategy:
-    /// Phase 1: Try directly from codebase path (works when mount is writable or tsconfig exists)
-    /// Phase 2: Create a writable workspace with real tsconfig (avoids symlink overlay issues)
+    /// Run scip-typescript indexer in a writable workspace.
+    ///
+    /// One unified path for all repos: deep-copy the codebase, install deps,
+    /// ensure tsconfigs exist, detect workspace flags, and run scip-typescript.
     fn run_typescript_indexer(&self, output: &Path) -> Result<()> {
         self.ensure_node_version(); // Non-fatal, switches Node if needed
 
         let output_str = output.to_str().unwrap();
-        let has_root_tsconfig = self.codebase_path.join("tsconfig.json").exists();
 
-        // Detect monorepo workspace type for scip-typescript flags.
-        // Only pass workspace flags if the corresponding package manager is installed
-        // (scip-typescript calls the PM directly and crashes hard if it's missing).
-        let workspace_flag = if self.codebase_path.join("pnpm-workspace.yaml").exists()
-            && which::which("pnpm").is_ok()
-        {
-            Some("--pnpm-workspaces")
-        } else if self.has_package_json_workspaces() && which::which("yarn").is_ok() {
+        // Always deep-copy into a writable workspace so scip-typescript never
+        // writes to the user's codebase and all source files are available.
+        info!("Creating writable TypeScript workspace (deep copy)");
+        let workspace = self.create_ts_workspace()?;
+
+        // Always use --yarn-workspaces for monorepos. We bundle Yarn 1 and control it.
+        // --pnpm-workspaces calls `pnpm ls -r` internally which fails on PM version
+        // mismatches (pnpm 9 vs 10, engine constraints, etc.). By normalizing all
+        // workspace configs into package.json "workspaces" (done in create_ts_workspace),
+        // Yarn 1's workspace discovery works for any repo type.
+        let workspace_flag = if self.has_workspaces_field(&workspace) && which::which("yarn").is_ok() {
             Some("--yarn-workspaces")
         } else {
             None
         };
 
-        // Phase 1: Try directly from the real codebase path.
-        // This avoids symlink overlays entirely (which crash Node.js with uv_cwd ENOENT
-        // on Docker Desktop macOS/virtiofs).
-        let mut args = vec!["index", "--output", output_str, "--max-file-byte-size", "10mb"];
-        if !has_root_tsconfig {
-            args.push("--infer-tsconfig");
+        if let Some(flag) = workspace_flag {
+            info!("Detected monorepo workspace ({})", flag);
         }
+
+        let mut args = vec!["index", "--output", output_str, "--max-file-byte-size", "10mb"];
         if let Some(flag) = workspace_flag {
             args.push(flag);
         }
-
-        let phase1 = self.try_typescript_from_dir(&args, &self.codebase_path);
-        if phase1.is_ok() {
-            return phase1;
+        // For non-workspace projects, use --infer-tsconfig so scip-typescript
+        // discovers TS files even without an explicit tsconfig.json include.
+        if workspace_flag.is_none() && !workspace.join("tsconfig.json").exists() {
+            args.push("--infer-tsconfig");
         }
 
-        // Phase 2: Direct indexing failed (likely read-only mount).
-        warn!("Direct TypeScript indexing failed, retrying with writable workspace");
-
-        if workspace_flag.is_some() {
-            // Monorepo: deep-copy + package install so cross-package configs resolve
-            info!("Detected monorepo workspace — creating deep workspace with dependency install");
-            let workspace = self.create_monorepo_ts_workspace()?;
-            let mut fallback_args = vec!["index", "--output", output_str, "--max-file-byte-size", "10mb"];
-            if let Some(flag) = workspace_flag {
-                fallback_args.push(flag);
-            }
-            self.try_typescript_from_dir(&fallback_args, &workspace)
-        } else {
-            // Simple project: shallow copy (existing behavior, unchanged)
-            let workspace = self.create_ts_workspace()?;
-            let fallback_args = vec!["index", "--output", output_str, "--max-file-byte-size", "10mb"];
-            self.try_typescript_from_dir(&fallback_args, &workspace)
-        }
+        self.try_typescript_from_dir(&args, &workspace)
     }
 
     /// Detect the required Node.js version from the target repository.
@@ -319,8 +301,7 @@ impl IndexerOrchestrator {
         None
     }
 
-    /// Extract the first major version number from a version string.
-    /// Handles: "22", "22.0.0", ">=22.0.0", "^22", "~22.1", "v22.0.0"
+    /// Extract the leading major version number from a version string (handles >=, ^, ~, v prefixes).
     fn extract_major_version(s: &str) -> Option<u32> {
         // Skip leading non-digit characters (>=, ^, ~, v, etc.)
         let digits_start = s.find(|c: char| c.is_ascii_digit())?;
@@ -364,7 +345,23 @@ impl IndexerOrchestrator {
             None => return,
         };
 
-        if current == hint.major {
+        // Determine whether the constraint is an exact pin or a range.
+        // Exact pins (.node-version, volta.node): switch if current != target.
+        // Range constraints (package.json engines.node, .nvmrc): keep current if current >= target.
+        let is_range = matches!(
+            hint.source,
+            "package.json engines.node" | ".nvmrc"
+        );
+
+        if is_range {
+            if current >= hint.major {
+                info!(
+                    "Node.js v{} already satisfies range constraint {} (from {})",
+                    current, hint.raw, hint.source
+                );
+                return;
+            }
+        } else if current == hint.major {
             info!("Node.js v{} already matches requirement", current);
             return;
         }
@@ -395,9 +392,9 @@ impl IndexerOrchestrator {
         }
     }
 
-    /// Check if package.json has a "workspaces" field (yarn/npm monorepo)
-    fn has_package_json_workspaces(&self) -> bool {
-        let pkg_path = self.codebase_path.join("package.json");
+    /// Check if package.json in the given directory has a "workspaces" field
+    fn has_workspaces_field(&self, dir: &Path) -> bool {
+        let pkg_path = dir.join("package.json");
         if !pkg_path.exists() {
             return false;
         }
@@ -408,73 +405,15 @@ impl IndexerOrchestrator {
             .unwrap_or(false)
     }
 
-    /// Create a writable workspace for scip-typescript.
-    /// If the codebase has a real tsconfig.json, copies it (preserving path aliases, jsx,
-    /// moduleResolution, etc.). Only generates a minimal tsconfig for pure JS projects.
-    /// Symlinks node_modules so module resolution works.
+    /// Create a writable workspace for scip-typescript by deep-copying the codebase.
+    /// Works for any repo: single project, monorepo, NX, etc.
+    ///
+    /// Steps:
+    /// 1. Deep-copy via tar (excludes .git, node_modules, build artifacts)
+    /// 2. Synthesize workspaces field for NX monorepos (project.json discovery)
+    /// 3. Install node dependencies (yarn/pnpm/npm — detected from lock file)
+    /// 4. Generate missing tsconfig.json for workspace packages
     fn create_ts_workspace(&self) -> Result<PathBuf> {
-        let ws = self.output_dir.join("ts-workspace");
-        if ws.exists() {
-            std::fs::remove_dir_all(&ws)
-                .context("Failed to clean previous ts-workspace")?;
-        }
-        std::fs::create_dir_all(&ws)
-            .context("Failed to create ts-workspace")?;
-
-        // Copy package.json if it exists (scip-typescript needs it for project detection)
-        let pkg = self.codebase_path.join("package.json");
-        if pkg.exists() {
-            std::fs::copy(&pkg, ws.join("package.json"))
-                .context("Failed to copy package.json to ts-workspace")?;
-        }
-
-        // Copy real tsconfig if it exists (preserves path aliases, jsx, moduleResolution, etc.)
-        let tsconfig = self.codebase_path.join("tsconfig.json");
-        if tsconfig.exists() {
-            std::fs::copy(&tsconfig, ws.join("tsconfig.json"))
-                .context("Failed to copy tsconfig.json to ts-workspace")?;
-
-            // Also copy tsconfig.*.json files (base configs that tsconfig.json may extend)
-            if let Ok(entries) = std::fs::read_dir(&self.codebase_path) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    if name_str.starts_with("tsconfig.") && name_str.ends_with(".json")
-                        && name_str != "tsconfig.json"
-                    {
-                        let _ = std::fs::copy(entry.path(), ws.join(&*name_str));
-                    }
-                }
-            }
-        } else {
-            // No tsconfig exists — pure JS project, generate minimal one pointing to codebase
-            let generated = format!(
-                r#"{{"compilerOptions":{{"allowJs":true,"checkJs":false}},"include":["{}/**/*"]}}"#,
-                self.codebase_path.display()
-            );
-            std::fs::write(ws.join("tsconfig.json"), generated)
-                .context("Failed to write generated tsconfig.json")?;
-        }
-
-        // Symlink node_modules from codebase so module resolution works
-        let node_modules = self.codebase_path.join("node_modules");
-        if node_modules.exists() {
-            #[cfg(unix)]
-            {
-                let _ = std::os::unix::fs::symlink(&node_modules, ws.join("node_modules"));
-            }
-        }
-
-        info!("Created writable ts-workspace at {:?}", ws);
-        Ok(ws)
-    }
-
-    /// Create a deep-copy workspace for monorepo TypeScript projects.
-    /// Monorepos (pnpm/yarn/npm workspaces) have sub-packages that reference shared
-    /// TypeScript configs via node_modules (e.g. `"extends": "@n8n/typescript-config/tsconfig.common.json"`).
-    /// These resolve through symlinks created by package managers. A shallow copy won't work —
-    /// we need the full directory tree plus a package install to create node_modules.
-    fn create_monorepo_ts_workspace(&self) -> Result<PathBuf> {
         let ws = self.output_dir.join("ts-workspace");
         if ws.exists() {
             std::fs::remove_dir_all(&ws)?;
@@ -501,39 +440,60 @@ impl IndexerOrchestrator {
             .stdin(tar_child.stdout.take().unwrap())
             .status()?;
 
-        // Wait for tar producer to finish
         tar_child.wait()?;
 
         if !extract_status.success() {
             return Err(anyhow!("tar copy to ts-workspace failed"));
         }
 
-        // Install deps so node_modules symlinks exist for tsconfig resolution
+        // Strip version-gating fields from workspace package.json so bundled
+        // PMs and scip-typescript's internal PM calls don't reject on version mismatches.
+        self.sanitize_package_json(&ws);
+
+        // Normalize all workspace configs into package.json "workspaces" field.
+        // This lets us always use --yarn-workspaces with Yarn 1 (which we control)
+        // regardless of what PM the project originally used.
+        self.ensure_pnpm_workspaces(&ws);
+        self.ensure_nx_workspaces(&ws);
+
+        // Install deps so node_modules symlinks exist for tsconfig/import resolution
         self.install_node_dependencies(&ws)?;
 
-        info!("Created monorepo ts-workspace at {:?}", ws);
+        // Generate tsconfig.json for workspace packages that lack one.
+        // scip-typescript silently skips packages without tsconfig.json.
+        self.ensure_workspace_tsconfigs(&ws);
+
+        info!("Created writable ts-workspace at {:?}", ws);
         Ok(ws)
     }
 
     /// Detect the package manager from lock files and run install with --ignore-scripts.
-    /// We only need the node_modules structure for config resolution, not build artifacts.
+    /// We only need the node_modules structure for import/tsconfig resolution, not build
+    /// artifacts, so we intentionally avoid --frozen-lockfile / npm ci — lockfile formats
+    /// change across PM versions and we have no guarantee the bundled PM version matches
+    /// what the project was developed with.
     /// Non-fatal on failure (matches patterns in try_install_python_deps and download_go_deps).
     fn install_node_dependencies(&self, workspace: &Path) -> Result<()> {
+        // Delete lockfiles that our bundled PM version can't parse. Yarn Berry (v2+)
+        // and pnpm v9 use different lockfile formats than Yarn 1 / pnpm v7.
+        // Without a lockfile the PM resolves from the registry (slower but always works).
+        self.sanitize_lockfiles(workspace);
+
         let (cmd, args): (&str, Vec<&str>) =
             if workspace.join("pnpm-lock.yaml").exists() && which::which("pnpm").is_ok() {
-                info!("Running pnpm install in monorepo workspace...");
-                ("pnpm", vec!["install", "--frozen-lockfile", "--ignore-scripts", "--config.engine-strict=false"])
+                info!("Running pnpm install in workspace...");
+                ("pnpm", vec!["install", "--ignore-scripts", "--config.engine-strict=false"])
             } else if workspace.join("yarn.lock").exists() && which::which("yarn").is_ok() {
-                info!("Running yarn install in monorepo workspace...");
-                ("yarn", vec!["install", "--frozen-lockfile", "--ignore-scripts"])
+                info!("Running yarn install in workspace...");
+                ("yarn", vec!["install", "--ignore-scripts", "--ignore-engines"])
             } else if workspace.join("package-lock.json").exists() {
-                info!("Running npm ci in monorepo workspace...");
-                ("npm", vec!["ci", "--ignore-scripts"])
+                info!("Running npm install in workspace...");
+                ("npm", vec!["install", "--ignore-scripts"])
             } else if workspace.join("package.json").exists() {
-                info!("Running npm install in monorepo workspace...");
+                info!("Running npm install in workspace (no lockfile)...");
                 ("npm", vec!["install", "--ignore-scripts"])
             } else {
-                warn!("No lock file found, skipping dependency install");
+                warn!("No package.json found, skipping dependency install");
                 return Ok(());
             };
 
@@ -549,6 +509,333 @@ impl IndexerOrchestrator {
         }
 
         Ok(())
+    }
+
+    /// Generate tsconfig.json for workspace packages missing one, so scip-typescript
+    /// doesn't silently skip them. Non-fatal on errors.
+    fn ensure_workspace_tsconfigs(&self, workspace: &Path) {
+        let pkg_path = workspace.join("package.json");
+        let pkg_contents = match std::fs::read_to_string(&pkg_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let pkg: serde_json::Value = match serde_json::from_str(&pkg_contents) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        // Supports both array and { "packages": [...] } (yarn berry) formats
+        let workspace_globs: Vec<String> = match pkg.get("workspaces") {
+            Some(serde_json::Value::Array(arr)) => {
+                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+            }
+            Some(serde_json::Value::Object(obj)) => {
+                // yarn berry format: { "packages": ["packages/*", ...] }
+                obj.get("packages")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default()
+            }
+            _ => return,
+        };
+
+        if workspace_globs.is_empty() {
+            return;
+        }
+
+        let has_root_tsconfig = workspace.join("tsconfig.json").exists();
+        let mut generated_count = 0u32;
+
+        for pattern in &workspace_globs {
+            let full_pattern = format!("{}/{}", workspace.display(), pattern);
+            let matches = match glob::glob(&full_pattern) {
+                Ok(paths) => paths,
+                Err(e) => {
+                    warn!("Invalid workspace glob pattern {:?}: {}", pattern, e);
+                    continue;
+                }
+            };
+
+            for entry in matches.flatten() {
+                if !entry.is_dir() {
+                    continue;
+                }
+                // Only process directories that have package.json but no tsconfig.json
+                if !entry.join("package.json").exists() || entry.join("tsconfig.json").exists() {
+                    continue;
+                }
+
+                let tsconfig_content = if has_root_tsconfig {
+                    // Compute relative path back to root tsconfig
+                    let rel_to_root = pathdiff::diff_paths(workspace, &entry)
+                        .unwrap_or_else(|| PathBuf::from("../.."));
+                    let extends_path = format!("{}/tsconfig.json", rel_to_root.display());
+                    format!(
+                        r#"{{
+  "extends": "{}",
+  "compilerOptions": {{ "rootDir": "src", "outDir": "dist" }},
+  "include": ["src/**/*", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
+}}"#,
+                        extends_path
+                    )
+                } else {
+                    r#"{
+  "compilerOptions": {
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "moduleResolution": "node"
+  },
+  "include": ["src/**/*", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx"]
+}"#
+                    .to_string()
+                };
+
+                let tsconfig_path = entry.join("tsconfig.json");
+                match std::fs::write(&tsconfig_path, &tsconfig_content) {
+                    Ok(()) => {
+                        let rel = entry.strip_prefix(workspace).unwrap_or(&entry);
+                        info!("Generated tsconfig.json for workspace package {:?}", rel.display());
+                        generated_count += 1;
+                    }
+                    Err(e) => {
+                        warn!("Failed to write tsconfig.json in {:?}: {}", entry, e);
+                    }
+                }
+            }
+        }
+
+        if generated_count > 0 {
+            info!(
+                "Generated tsconfig.json for {} workspace package(s) missing it",
+                generated_count
+            );
+        }
+    }
+
+    /// Remove version-gating fields from the workspace copy's package.json.
+    /// Projects pin PM versions via "packageManager" (Corepack) and "engines" (pnpm/yarn/npm).
+    /// scip-typescript shells out to PMs internally and these constraints cause hard failures
+    /// when the bundled PM version doesn't match. We strip them since we only need
+    /// node_modules for resolution, not a production build.
+    fn sanitize_package_json(&self, workspace: &Path) {
+        let pkg_path = workspace.join("package.json");
+        let contents = match std::fs::read_to_string(&pkg_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut pkg: serde_json::Value = match serde_json::from_str(&contents) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let obj = match pkg.as_object_mut() {
+            Some(o) => o,
+            None => return,
+        };
+
+        let mut changed = false;
+
+        // Strip packageManager (e.g. "yarn@4.6.0") — prevents Corepack/PM version rejection
+        if obj.remove("packageManager").is_some() {
+            info!("Stripped packageManager field from workspace package.json");
+            changed = true;
+        }
+
+        // Strip PM version constraints from engines (e.g. "pnpm": "^9.12.2")
+        // Keep "node" constraint — we actually respect that via ensure_node_version().
+        if let Some(engines) = obj.get_mut("engines").and_then(|v| v.as_object_mut()) {
+            for key in &["pnpm", "yarn", "npm"] {
+                if engines.remove(*key).is_some() {
+                    info!("Stripped engines.{} constraint from workspace package.json", key);
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            if let Ok(updated) = serde_json::to_string_pretty(&pkg) {
+                let _ = std::fs::write(&pkg_path, updated);
+            }
+        }
+    }
+
+    /// Delete lockfiles whose format is incompatible with our bundled PM versions.
+    /// Lockfile formats change across major PM versions (Yarn 1 vs Berry, pnpm v6 vs v9).
+    /// Without a lockfile the PM resolves from the registry — slower but always works.
+    fn sanitize_lockfiles(&self, workspace: &Path) {
+        // Yarn Berry (v2+) lockfile starts with "__metadata:" — Yarn 1 can't parse it.
+        let yarn_lock = workspace.join("yarn.lock");
+        if yarn_lock.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&yarn_lock) {
+                // Yarn 1 lockfile starts with "# THIS IS AN AUTOGENERATED FILE"
+                // Yarn Berry lockfile starts with "__metadata:" (YAML format)
+                let is_berry = contents.trim_start().starts_with("__metadata:");
+                if is_berry {
+                    info!("Detected Yarn Berry lockfile format — removing for Yarn 1 compatibility");
+                    let _ = std::fs::remove_file(&yarn_lock);
+                }
+            }
+        }
+
+        // pnpm lockfile v6+ uses a different format than older versions.
+        // Check if our bundled pnpm can handle it; if not, remove.
+        let pnpm_lock = workspace.join("pnpm-lock.yaml");
+        if pnpm_lock.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&pnpm_lock) {
+                // Extract lockfileVersion — versions >= 9.0 may be incompatible with older pnpm
+                if let Some(version_line) = contents.lines().find(|l| l.starts_with("lockfileVersion:")) {
+                    let version_str = version_line.trim_start_matches("lockfileVersion:").trim().trim_matches('\'').trim_matches('"');
+                    if let Ok(version) = version_str.parse::<f64>() {
+                        if version >= 9.0 {
+                            info!("Detected pnpm lockfile v{} — removing for bundled pnpm compatibility", version);
+                            let _ = std::fs::remove_file(&pnpm_lock);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// For pnpm monorepos, synthesize a "workspaces" field in package.json from
+    /// pnpm-workspace.yaml. This lets us always use --yarn-workspaces (Yarn 1) for
+    /// workspace discovery, avoiding scip-typescript's internal `pnpm ls -r` call
+    /// which fails on PM version mismatches.
+    fn ensure_pnpm_workspaces(&self, workspace: &Path) {
+        if self.has_workspaces_field(workspace) {
+            return; // Already has workspaces — nothing to do
+        }
+
+        let pnpm_ws_path = workspace.join("pnpm-workspace.yaml");
+        if !pnpm_ws_path.exists() {
+            return;
+        }
+
+        let contents = match std::fs::read_to_string(&pnpm_ws_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        // Parse pnpm-workspace.yaml — format is: packages:\n  - 'glob'\n  - 'glob'
+        let mut globs: Vec<String> = Vec::new();
+        let mut in_packages = false;
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed == "packages:" {
+                in_packages = true;
+                continue;
+            }
+            if in_packages {
+                if trimmed.starts_with('-') {
+                    let glob = trimmed.trim_start_matches('-').trim()
+                        .trim_matches('\'').trim_matches('"');
+                    if !glob.is_empty() {
+                        globs.push(glob.to_string());
+                    }
+                } else if !trimmed.is_empty() {
+                    break; // New top-level key
+                }
+            }
+        }
+
+        if globs.is_empty() {
+            return;
+        }
+
+        info!(
+            "Synthesizing workspaces field from pnpm-workspace.yaml ({} globs)",
+            globs.len()
+        );
+
+        let pkg_path = workspace.join("package.json");
+        let pkg_contents = match std::fs::read_to_string(&pkg_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut pkg: serde_json::Value = match serde_json::from_str(&pkg_contents) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let workspace_values: Vec<serde_json::Value> = globs
+            .iter()
+            .map(|g| serde_json::Value::String(g.clone()))
+            .collect();
+        pkg["workspaces"] = serde_json::Value::Array(workspace_values);
+
+        if let Ok(updated) = serde_json::to_string_pretty(&pkg) {
+            if let Err(e) = std::fs::write(&pkg_path, updated) {
+                warn!("Failed to write workspaces field to package.json: {}", e);
+            }
+        }
+    }
+
+    /// For NX monorepos that don't have a "workspaces" field in package.json,
+    /// synthesize one by scanning for project.json files. This lets yarn/pnpm link
+    /// workspace packages and lets scip-typescript discover them.
+    fn ensure_nx_workspaces(&self, workspace: &Path) {
+        let pkg_path = workspace.join("package.json");
+        let pkg_contents = match std::fs::read_to_string(&pkg_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut pkg: serde_json::Value = match serde_json::from_str(&pkg_contents) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        // Already has workspaces — nothing to do
+        if pkg.get("workspaces").is_some() {
+            return;
+        }
+
+        // Only applies to NX monorepos
+        if !workspace.join("nx.json").exists() {
+            return;
+        }
+
+        // Scan for project.json files to discover NX projects
+        let mut workspace_dirs: Vec<String> = Vec::new();
+        for entry in walkdir::WalkDir::new(workspace)
+            .max_depth(4)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if entry.file_name() == "project.json" && entry.depth() > 0 {
+                if let Some(parent) = entry.path().parent() {
+                    if let Ok(rel) = parent.strip_prefix(workspace) {
+                        let rel_str = rel.to_string_lossy().to_string();
+                        if !rel_str.is_empty() && !rel_str.contains("node_modules") {
+                            workspace_dirs.push(rel_str);
+                        }
+                    }
+                }
+            }
+        }
+
+        if workspace_dirs.is_empty() {
+            return;
+        }
+
+        info!(
+            "Synthesizing workspaces field from {} NX project.json files",
+            workspace_dirs.len()
+        );
+
+        let workspace_values: Vec<serde_json::Value> = workspace_dirs
+            .iter()
+            .map(|d| serde_json::Value::String(d.clone()))
+            .collect();
+        pkg["workspaces"] = serde_json::Value::Array(workspace_values);
+
+        match serde_json::to_string_pretty(&pkg) {
+            Ok(updated) => {
+                if let Err(e) = std::fs::write(&pkg_path, updated) {
+                    warn!("Failed to write updated package.json with workspaces: {}", e);
+                }
+            }
+            Err(e) => warn!("Failed to serialize package.json: {}", e),
+        }
     }
 
     /// Run scip-java with automatic build tool disambiguation.
@@ -588,24 +875,6 @@ impl IndexerOrchestrator {
         }
 
         self.run_simple_indexer("scip-java", &["index", "--output", output_str])
-    }
-
-    /// Ensure gradlew and mvnw are executable (git can strip +x bits on clone)
-    fn fix_build_wrapper_permissions(&self) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            for wrapper in &["gradlew", "mvnw"] {
-                let path = self.codebase_path.join(wrapper);
-                if path.exists() {
-                    if let Ok(meta) = path.metadata() {
-                        let mut perms = meta.permissions();
-                        perms.set_mode(perms.mode() | 0o111);
-                        let _ = std::fs::set_permissions(&path, perms);
-                    }
-                }
-            }
-        }
     }
 
     /// Try running scip-typescript from a specific directory.
@@ -664,6 +933,7 @@ impl IndexerOrchestrator {
             .unwrap_or_else(|| PathBuf::from("scip-python"));
         let mut cmd = Command::new(&binary);
         cmd.current_dir(&self.codebase_path)
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .args(["index", ".", "--output", output_str]);
 
         if !pythonpath_parts.is_empty() {
@@ -748,14 +1018,8 @@ impl IndexerOrchestrator {
         }
     }
 
-    /// Pre-download Go module dependencies (Sourcegraph pattern: go mod download pre-step).
-    /// Non-fatal on failure — graceful degradation.
-    fn download_go_deps(&self, module_dir: &Path) {
-        self.download_go_deps_with_env(module_dir, &None);
-    }
-
     /// Pre-download Go module dependencies with optional GOWORK environment.
-    /// Passing GOWORK allows cross-module dependencies to resolve in workspace mode.
+    /// Non-fatal on failure — graceful degradation.
     fn download_go_deps_with_env(&self, module_dir: &Path, gowork_env: &Option<String>) {
         info!("Downloading Go module dependencies for {:?}...", module_dir);
         let mut cmd = Command::new("go");
@@ -782,7 +1046,7 @@ impl IndexerOrchestrator {
 
         // If root has go.mod, download deps and run normally
         if self.codebase_path.join("go.mod").exists() {
-            self.download_go_deps(&self.codebase_path);
+            self.download_go_deps_with_env(&self.codebase_path, &None);
             return self.run_simple_indexer("scip-go", &["--output", output_str]);
         }
 
@@ -849,7 +1113,7 @@ impl IndexerOrchestrator {
             // Go resolves modules by walking up from a file's real path (through symlinks),
             // so it never finds go.mod in the writable dir with symlinked sources.
             cmd.current_dir(dir)
-                .args(&["--output", sub_output_str]);
+                .args(["--output", sub_output_str]);
             if let Some(ref gowork_path) = gowork_env {
                 cmd.env("GOWORK", gowork_path);
             }
@@ -982,17 +1246,16 @@ impl IndexerOrchestrator {
     /// to generate vendor/, then indexes from there.
     /// Note: scip-php does NOT support --output; it writes index.scip to cwd.
     fn run_php_indexer(&self, output: &Path) -> Result<()> {
-        // If the codebase already has vendor/autoload.php, index directly
-        if self.codebase_path.join("vendor/autoload.php").exists() {
-            return self.run_indexer_and_move("scip-php", &[], &self.codebase_path, output);
-        }
+        let has_vendor = self.codebase_path.join("vendor/autoload.php").exists();
 
-        // Check composer.json exists
-        if !self.codebase_path.join("composer.json").exists() {
+        // Check composer.json exists (needed for workspace setup when vendor is absent)
+        if !has_vendor && !self.codebase_path.join("composer.json").exists() {
             return Err(anyhow!("No composer.json found in codebase"));
         }
 
-        info!("Creating writable PHP workspace (vendor/ not found in codebase)");
+        // Always use a writable workspace — never run scip-php in the user's codebase
+        // (scip-php writes index.scip to cwd).
+        info!("Creating writable PHP workspace (zero-write guarantee)");
 
         let workspace = self.output_dir.join("php-workspace");
         if workspace.exists() {
@@ -1010,8 +1273,8 @@ impl IndexerOrchestrator {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 
-            // Skip vendor (created via composer install), composer files (copied as real files),
-            // and hidden dirs
+            // Skip composer files (copied as real files) and hidden dirs.
+            // vendor/ is symlinked below only when it already exists in the codebase.
             if name_str == "vendor"
                 || name_str == "composer.json"
                 || name_str == "composer.lock"
@@ -1025,28 +1288,37 @@ impl IndexerOrchestrator {
                 .with_context(|| format!("Failed to symlink {:?}", name))?;
         }
 
-        // Copy only composer.json (skip composer.lock — lock files often require specific
-        // PHP versions that don't match the container; fresh resolve is more reliable)
-        std::fs::copy(
-            self.codebase_path.join("composer.json"),
-            workspace.join("composer.json"),
-        ).context("Failed to copy composer.json")?;
+        if has_vendor {
+            // Symlink existing vendor/ from codebase into workspace
+            info!("Symlinking existing vendor/ from codebase into workspace");
+            std::os::unix::fs::symlink(
+                self.codebase_path.join("vendor"),
+                workspace.join("vendor"),
+            ).context("Failed to symlink vendor/")?;
+        } else {
+            // Copy only composer.json (skip composer.lock — lock files often require specific
+            // PHP versions that don't match the container; fresh resolve is more reliable)
+            std::fs::copy(
+                self.codebase_path.join("composer.json"),
+                workspace.join("composer.json"),
+            ).context("Failed to copy composer.json")?;
 
-        // Augment autoload config so scip-php discovers files outside registered PSR-4 roots
-        if let Err(e) = self.augment_php_autoload(&workspace) {
-            warn!("Failed to augment PHP autoload (non-fatal): {}", e);
-        }
+            // Augment autoload config so scip-php discovers files outside registered PSR-4 roots
+            if let Err(e) = self.augment_php_autoload(&workspace) {
+                warn!("Failed to augment PHP autoload (non-fatal): {}", e);
+            }
 
-        // Run composer install to generate vendor/autoload.php
-        info!("Running composer install in PHP workspace");
-        let composer_status = Command::new("composer")
-            .current_dir(&workspace)
-            .args(["install", "--no-dev", "--no-scripts", "--no-interaction", "--ignore-platform-reqs"])
-            .status()
-            .context("Failed to run composer install")?;
+            // Run composer install to generate vendor/autoload.php
+            info!("Running composer install in PHP workspace");
+            let composer_status = Command::new("composer")
+                .current_dir(&workspace)
+                .args(["install", "--no-dev", "--no-scripts", "--no-interaction", "--ignore-platform-reqs"])
+                .status()
+                .context("Failed to run composer install")?;
 
-        if !composer_status.success() {
-            warn!("composer install failed (exit {:?}), trying scip-php anyway", composer_status.code());
+            if !composer_status.success() {
+                warn!("composer install failed (exit {:?}), trying scip-php anyway", composer_status.code());
+            }
         }
 
         // Run scip-php from the workspace (writes index.scip to cwd, then we move it)
@@ -1203,6 +1475,7 @@ impl IndexerOrchestrator {
     /// writes index.scip to cwd.
     fn run_clang_indexer(&self, output: &Path) -> Result<()> {
         // Find compile_commands.json (required by scip-clang)
+        // Always use absolute paths and run from output_dir to avoid writing to codebase.
         let compdb = self.codebase_path.join("compile_commands.json");
         if !compdb.exists() {
             // Check build/ subdirectory (CMake default)
@@ -1210,7 +1483,7 @@ impl IndexerOrchestrator {
             if build_compdb.exists() {
                 let compdb_str = build_compdb.to_string_lossy().to_string();
                 let args_str = format!("--compdb-path={}", compdb_str);
-                return self.run_indexer_and_move("scip-clang", &[&args_str], &self.codebase_path, output);
+                return self.run_indexer_and_move("scip-clang", &[&args_str], &self.output_dir, output);
             }
             return Err(anyhow!(
                 "compile_commands.json not found. Generate it with CMake (-DCMAKE_EXPORT_COMPILE_COMMANDS=ON), \
@@ -1218,7 +1491,9 @@ impl IndexerOrchestrator {
             ));
         }
 
-        self.run_indexer_and_move("scip-clang", &["--compdb-path=compile_commands.json"], &self.codebase_path, output)
+        let compdb_str = compdb.to_string_lossy().to_string();
+        let args_str = format!("--compdb-path={}", compdb_str);
+        self.run_indexer_and_move("scip-clang", &[&args_str], &self.output_dir, output)
     }
 
     /// Run scip-dart indexer via dart pub global run.
@@ -1231,9 +1506,10 @@ impl IndexerOrchestrator {
         }
 
         debug!("Running scip-dart via dart pub global run");
+        let codebase_abs = self.codebase_path.to_string_lossy().to_string();
         let status = Command::new("dart")
-            .current_dir(&self.codebase_path)
-            .args(["pub", "global", "run", "scip_dart", "."])
+            .current_dir(&self.output_dir)
+            .args(["pub", "global", "run", "scip_dart", &codebase_abs])
             .status()
             .context("Failed to run dart pub global run scip_dart")?;
 
@@ -1241,8 +1517,8 @@ impl IndexerOrchestrator {
             return Err(anyhow!("scip-dart exited with status: {:?}", status.code()));
         }
 
-        // Move index.scip from codebase dir to our output path
-        let default_output = self.codebase_path.join("index.scip");
+        // Move index.scip from output_dir to our output path
+        let default_output = self.output_dir.join("index.scip");
         if default_output.exists() {
             std::fs::rename(&default_output, output)
                 .with_context(|| format!("Failed to move index.scip to {:?}", output))?;
@@ -1263,7 +1539,15 @@ impl IndexerOrchestrator {
 
     /// Run an indexer that doesn't support --output, then move its default
     /// index.scip to the desired output path.
+    ///
+    /// Safety: `working_dir` must NOT be inside the user's codebase. This is
+    /// enforced with a debug assertion to catch regressions.
     fn run_indexer_and_move(&self, binary: &str, args: &[&str], working_dir: &Path, output: &Path) -> Result<()> {
+        debug_assert!(
+            !working_dir.starts_with(&self.codebase_path),
+            "run_indexer_and_move: working_dir ({:?}) must not be inside codebase_path ({:?})",
+            working_dir, self.codebase_path
+        );
         self.execute_indexer_in(binary, args, working_dir)?;
 
         let default_output = working_dir.join("index.scip");
@@ -1312,7 +1596,7 @@ impl IndexerOrchestrator {
         }
 
         let status = Command::new("dotnet")
-            .current_dir(&self.codebase_path)
+            .current_dir(&self.output_dir)
             .args(&cmd_args)
             .status()
             .context("Failed to run dotnet scip-dotnet")?;

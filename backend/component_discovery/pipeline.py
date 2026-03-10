@@ -244,8 +244,6 @@ def discover_all_components(
             conn.execute("DELETE FROM components WHERE module_id = ?", (module["id"],))
             conn.commit()
 
-            comp_before = 0
-
             discover_components(conn, module_with_dirs, scip_path, source_dir, client, run_id, log_fn=log_fn)
 
             comp_after = conn.execute(
@@ -255,7 +253,7 @@ def discover_all_components(
                 "SELECT COUNT(*) FROM component_edges WHERE pipeline_run_id = ?", (run_id,)
             ).fetchone()[0]
 
-            total_components += (comp_after - comp_before)
+            total_components += comp_after
             total_edges = edge_count
             processed += 1
 

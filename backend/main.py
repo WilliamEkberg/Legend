@@ -28,7 +28,6 @@ from prompts import (
     modules_system_prompt, edges_system_prompt,
     modules_variables_prompt, edges_variables_prompt,
     MODULES_FILENAME, EDGES_FILENAME,
-    system_prompt, variables_prompt,
 )
 
 app = FastAPI()
@@ -120,7 +119,7 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
     # Use --mount instead of -v: fails loudly if source path doesn't exist (macOS -v silently mounts empty dir)
     if not force_local and _ensure_docker_image():
         return ["docker", "run", "--rm",
-                "--mount", f"type=bind,source={source_dir},target=/workspace",
+                "--mount", f"type=bind,source={source_dir},target=/workspace,readonly",
                 "--mount", f"type=bind,source={str(OUTPUT_DIR)},target=/output",
                 SCIP_LOCAL_IMAGE, "/workspace", "--output", "/output"], "Docker (scip-engine image)"
 
@@ -131,7 +130,7 @@ def _get_scip_cmd(source_dir: str) -> tuple[list[str], str]:
         return ["bash", str(scip_script), source_dir, str(OUTPUT_DIR)], "analyze-local.sh script"
     else:
         return ["docker", "run", "--rm",
-                "--mount", f"type=bind,source={source_dir},target=/workspace",
+                "--mount", f"type=bind,source={source_dir},target=/workspace,readonly",
                 "--mount", f"type=bind,source={str(OUTPUT_DIR)},target=/output",
                 SCIP_LOCAL_IMAGE, "/workspace", "--output", "/output"], "Docker (scip-engine image)"
 
@@ -172,15 +171,8 @@ def build_prompt(provider: str, model: str, repo_path: str | None = None) -> str
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     target_dir = repo_path if repo_path else str(PROJECT_DIR)
 
-    sys_prompt = system_prompt()
-    var_prompt = variables_prompt(
-        project_dir=target_dir,
-        output_dir=str(OUTPUT_DIR),
-        cwd=str(OUTPUT_DIR),
-        provider=provider,
-        model=model,
-        timestamp=timestamp,
-    )
+    sys_prompt = modules_system_prompt()
+    var_prompt = modules_variables_prompt(target_dir, str(OUTPUT_DIR))
 
     # Combine system prompt and variables prompt
     return f"{sys_prompt}\n\n---\n\n{var_prompt}"
@@ -1314,7 +1306,7 @@ async def run_stream(req: StreamRunRequest):
                         yield f"data: {json.dumps({'type': 'stdout', 'text': '[SCIP] Warning: indexer succeeded but no .scip file found. Part 2 will retry.'})}\n\n"
 
             if opencode_rc != 0:
-                yield f"data: {json.dumps({'type': 'stderr', 'text': f'[Part 1] Modules step exited with code {opencode_rc}'})}\n\n"
+                yield f"data: {json.dumps({'type': 'stderr', 'text': f'[Part 1] Modules step exited with code {opencode_rc}. Check that opencode-ai is installed (npm i -g opencode-ai@latest) and your API key is set.'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                 return
             yield f"data: {json.dumps({'type': 'stdout', 'text': '[Part 1] Modules step completed (exit code 0)'})}\n\n"
@@ -1334,8 +1326,20 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'stdout', 'text': f'[Part 1] WARNING: {MODULES_FILENAME} found in codebase/ instead of output/. Moving it.'})}\n\n"
                     shutil.move(str(misplaced), str(modules_path))
 
+            # Fallback: search for any JSON file with "modules" or "level2" in its name
             if not modules_path.exists():
-                yield f"data: {json.dumps({'type': 'stderr', 'text': f'[Part 1] {MODULES_FILENAME} not found. Module step may have failed or used a different filename.'})}\n\n"
+                candidates = [
+                    f for f in OUTPUT_DIR.glob("*.json")
+                    if f.name != "detection-report.json"
+                    and ("module" in f.name.lower() or "level2" in f.name.lower() or "l2" in f.name.lower())
+                ]
+                if candidates:
+                    best = candidates[0]
+                    yield f"data: {json.dumps({'type': 'stdout', 'text': f'[Part 1] WARNING: Expected {MODULES_FILENAME} but found {best.name}. Using it.'})}\n\n"
+                    shutil.move(str(best), str(modules_path))
+
+            if not modules_path.exists():
+                yield f"data: {json.dumps({'type': 'stderr', 'text': f'[Part 1] {MODULES_FILENAME} not found. Check LLM provider and API key.'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                 return
 

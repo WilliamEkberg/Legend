@@ -125,37 +125,6 @@ fi
 OUTPUT_DIR="$(pwd)/output"
 mkdir -p "$OUTPUT_DIR"
 
-# Check for Node.js project and install dependencies to ensure TS config resolution works
-if [ -f "$CODEBASE_PATH/package.json" ]; then
-    echo -e "${YELLOW}Node.js project detected. Installing dependencies for accurate indexing...${NC}"
-    # Save current directory
-    CURRENT_DIR=$(pwd)
-    cd "$CODEBASE_PATH"
-
-    # Try to install dependencies (ignore scripts to be safe/fast)
-    if [ -f "yarn.lock" ]; then
-        # Always use npx yarn to avoid conflicts with Hadoop YARN or other yarn commands
-        echo -e "${BLUE}Using npx yarn (avoids Hadoop YARN conflict)...${NC}"
-        npx yarn install --frozen-lockfile --ignore-scripts 2>/dev/null || \
-        npx yarn install --ignore-scripts 2>/dev/null || \
-        echo -e "${YELLOW}yarn install failed, continuing anyway...${NC}"
-    elif [ -f "pnpm-lock.yaml" ]; then
-        if command -v pnpm > /dev/null; then
-            echo -e "${BLUE}Using pnpm...${NC}"
-            pnpm install --frozen-lockfile --ignore-scripts --config.engine-strict=false || echo -e "${YELLOW}pnpm install failed, continuing anyway...${NC}"
-        else
-            echo -e "${BLUE}pnpm detected but not installed. Using npx pnpm...${NC}"
-            npx pnpm install --frozen-lockfile --ignore-scripts --config.engine-strict=false || echo -e "${YELLOW}pnpm install failed, continuing anyway...${NC}"
-        fi
-    else
-        echo -e "${BLUE}Using npm...${NC}"
-        npm install --legacy-peer-deps --ignore-scripts || echo -e "${YELLOW}npm install failed, continuing anyway...${NC}"
-    fi
-
-    # Restore directory
-    cd "$CURRENT_DIR"
-fi
-
 # Run the indexer
 echo -e "${YELLOW}Running SCIP indexer...${NC}"
 
@@ -174,7 +143,7 @@ else
     # Use Docker
     # Note: workspace is mounted read-write because indexers need to write temp files
     docker run --rm \
-        -v "$CODEBASE_PATH:/workspace" \
+        -v "$CODEBASE_PATH:/workspace:ro" \
         -v "$OUTPUT_DIR:/output" \
         -e "SCIP_MEMORY_LIMIT=${SCIP_MEMORY_LIMIT:-6144}" \
         "$DOCKER_IMAGE" \
