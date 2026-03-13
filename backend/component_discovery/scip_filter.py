@@ -16,6 +16,7 @@ Single-pass with deferred resolution:
 import re
 from collections import defaultdict
 
+from component_discovery.scip_parser import load_scip_index
 from component_discovery.scip_pb2 import Index
 
 # SymbolInformation.Kind values that represent callable symbols
@@ -93,6 +94,45 @@ def _detect_path_prefix(raw_paths: list[str], module_dirs: list[str]) -> str:
     return ""
 
 
+def _compute_add_prefix(index: Index, raw_paths: list[str], module_dirs: list[str],
+                         strip_prefix: str) -> str:
+    """Compute prefix to prepend when SCIP paths are module-relative.
+
+    Uses metadata.project_root to reconstruct the module prefix when paths
+    don't match any module_dir after stripping.
+    """
+    if not module_dirs or not raw_paths:
+        return ""
+
+    sample = raw_paths[:200]
+    for rp in sample:
+        adjusted = rp[len(strip_prefix):] if strip_prefix and rp.startswith(strip_prefix) else rp
+        if _file_in_module(adjusted, module_dirs):
+            return ""
+
+    project_root = ""
+    if index.metadata and index.metadata.project_root:
+        project_root = index.metadata.project_root
+
+    if not project_root:
+        return ""
+
+    if project_root.startswith("file://"):
+        path = project_root[len("file://"):]
+    else:
+        path = project_root
+
+    path = path.rstrip("/") + "/"
+
+    for md in module_dirs:
+        md_with_slash = "/" + md.rstrip("/") + "/"
+        idx = path.find(md_with_slash)
+        if idx >= 0:
+            return path[idx + 1:]
+
+    return ""
+
+
 def parse_scip_for_module(scip_path: str | list[str], module_dirs: list[str]) -> dict:
     """
     Parse one or more SCIP index files and extract edges scoped to one module.
@@ -111,15 +151,22 @@ def parse_scip_for_module(scip_path: str | list[str], module_dirs: list[str]) ->
             - "definitions": int count of definitions in module
     """
     if isinstance(scip_path, list):
-        results = [parse_scip_for_module(p, module_dirs) for p in scip_path]
+        results = []
+        for p in scip_path:
+            r = parse_scip_for_module(p, module_dirs)
+            if r["files"]:  # skip files that failed to parse
+                results.append(r)
+        if not results:
+            return _empty_result()
         return _merge_scip_results(results)
-    index = Index()
-    with open(scip_path, "rb") as f:
-        index.ParseFromString(f.read())
+    index = load_scip_index(scip_path)
+    if index is None:
+        return _empty_result()
 
-    # Detect and strip path prefix (e.g. "Legend/" or "../../../workspace/Legend/")
     raw_paths = [doc.relative_path for doc in index.documents]
     prefix = _detect_path_prefix(raw_paths, module_dirs)
+
+    add_prefix = _compute_add_prefix(index, raw_paths, module_dirs, prefix)
 
     # Pass 1: collect definitions, symbol kinds, relationships
     symbol_to_file = {}
@@ -132,6 +179,8 @@ def parse_scip_for_module(scip_path: str | list[str], module_dirs: list[str]) ->
         file_path = doc.relative_path
         if prefix and file_path.startswith(prefix):
             file_path = file_path[len(prefix):]
+        if add_prefix:
+            file_path = add_prefix + file_path
         all_files.add(file_path)
 
         for sym_info in doc.symbols:
@@ -202,6 +251,17 @@ def parse_scip_for_module(scip_path: str | list[str], module_dirs: list[str]) ->
         "inheritance_edges": dict(inherit_edges),
         "files": module_files,
         "definitions": module_defs,
+    }
+
+
+def _empty_result() -> dict:
+    """Return an empty parsed result for graceful degradation."""
+    return {
+        "call_edges": {},
+        "import_edges": {},
+        "inheritance_edges": {},
+        "files": set(),
+        "definitions": 0,
     }
 
 

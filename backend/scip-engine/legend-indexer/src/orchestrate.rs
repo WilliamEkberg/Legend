@@ -25,6 +25,29 @@ struct NodeVersionHint {
     major: u32,
 }
 
+/// Check whether a directory contains any TS/JS source files (max depth 5).
+fn has_ts_js_files(dir: &Path) -> bool {
+    for entry in walkdir::WalkDir::new(dir)
+        .max_depth(5)
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            name != "node_modules" && name != "dist" && name != ".next"
+        })
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_file() {
+            if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                match ext {
+                    "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" => return true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Orchestrates SCIP indexer execution
 pub struct IndexerOrchestrator {
     indexers_path: Option<PathBuf>,
@@ -411,8 +434,9 @@ impl IndexerOrchestrator {
     /// Steps:
     /// 1. Deep-copy via tar (excludes .git, node_modules, build artifacts)
     /// 2. Synthesize workspaces field for NX monorepos (project.json discovery)
-    /// 3. Install node dependencies (yarn/pnpm/npm — detected from lock file)
-    /// 4. Generate missing tsconfig.json for workspace packages
+    /// 3. Generate package.json for NX workspace dirs missing one (yarn visibility)
+    /// 4. Install node dependencies (yarn/pnpm/npm — detected from lock file)
+    /// 5. Generate missing tsconfig.json for workspace packages
     fn create_ts_workspace(&self) -> Result<PathBuf> {
         let ws = self.output_dir.join("ts-workspace");
         if ws.exists() {
@@ -420,7 +444,6 @@ impl IndexerOrchestrator {
         }
         std::fs::create_dir_all(&ws)?;
 
-        // Deep-copy via tar pipe (fast, excludes build artifacts and VCS)
         info!("Deep-copying codebase to writable workspace via tar...");
         let mut tar_child = Command::new("tar")
             .current_dir(&self.codebase_path)
@@ -446,17 +469,14 @@ impl IndexerOrchestrator {
             return Err(anyhow!("tar copy to ts-workspace failed"));
         }
 
-        // Strip version-gating fields from workspace package.json so bundled
-        // PMs and scip-typescript's internal PM calls don't reject on version mismatches.
         self.sanitize_package_json(&ws);
-
-        // Normalize all workspace configs into package.json "workspaces" field.
-        // This lets us always use --yarn-workspaces with Yarn 1 (which we control)
-        // regardless of what PM the project originally used.
         self.ensure_pnpm_workspaces(&ws);
         self.ensure_nx_workspaces(&ws);
+        self.ensure_nx_package_jsons(&ws);
 
-        // Install deps so node_modules symlinks exist for tsconfig/import resolution
+        self.ensure_all_tsconfig_dirs_in_workspace(&ws);
+
+        // Install deps for tsconfig/import resolution
         self.install_node_dependencies(&ws)?;
 
         // Generate tsconfig.json for workspace packages that lack one.
@@ -789,7 +809,6 @@ impl IndexerOrchestrator {
             return;
         }
 
-        // Only applies to NX monorepos
         if !workspace.join("nx.json").exists() {
             return;
         }
@@ -835,6 +854,217 @@ impl IndexerOrchestrator {
                 }
             }
             Err(e) => warn!("Failed to serialize package.json: {}", e),
+        }
+    }
+
+    /// Generate minimal package.json for NX workspace dirs missing one.
+    /// Yarn needs package.json to see workspace members; NX apps often only have project.json.
+    fn ensure_nx_package_jsons(&self, workspace: &Path) {
+        if !workspace.join("nx.json").exists() {
+            return;
+        }
+
+        let pkg_path = workspace.join("package.json");
+        let pkg_contents = match std::fs::read_to_string(&pkg_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let pkg: serde_json::Value = match serde_json::from_str(&pkg_contents) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let workspace_globs: Vec<String> = match pkg.get("workspaces") {
+            Some(serde_json::Value::Array(arr)) => {
+                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+            }
+            _ => return,
+        };
+
+        if workspace_globs.is_empty() {
+            return;
+        }
+
+        let mut generated_count = 0u32;
+
+        for pattern in &workspace_globs {
+            let full_pattern = format!("{}/{}", workspace.display(), pattern);
+            let matches = match glob::glob(&full_pattern) {
+                Ok(paths) => paths,
+                Err(e) => {
+                    warn!("Invalid workspace glob pattern {:?}: {}", pattern, e);
+                    continue;
+                }
+            };
+
+            for entry in matches.flatten() {
+                if !entry.is_dir() {
+                    continue;
+                }
+                if !entry.join("project.json").exists() {
+                    continue;
+                }
+                if entry.join("package.json").exists() {
+                    continue;
+                }
+                if !has_ts_js_files(&entry) {
+                    continue;
+                }
+
+                let rel = entry
+                    .strip_prefix(workspace)
+                    .unwrap_or(&entry)
+                    .to_string_lossy()
+                    .replace('/', "-")
+                    .replace('\\', "-");
+
+                let pkg_json = format!(
+                    r#"{{"name": "{}", "version": "0.0.0", "private": true}}"#,
+                    rel
+                );
+
+                match std::fs::write(entry.join("package.json"), &pkg_json) {
+                    Ok(_) => {
+                        info!("Generated package.json for NX project {:?}", rel);
+                        generated_count += 1;
+                    }
+                    Err(e) => {
+                        warn!("Failed to write package.json for {:?}: {}", rel, e);
+                    }
+                }
+            }
+        }
+
+        if generated_count > 0 {
+            info!(
+                "Generated {} package.json files for NX workspace dirs",
+                generated_count
+            );
+        }
+    }
+
+    /// Add uncovered tsconfig.json directories to the workspace configuration.
+    /// Also generates package.json for newly-added dirs so yarn can discover them.
+    fn ensure_all_tsconfig_dirs_in_workspace(&self, workspace: &Path) {
+        let pkg_path = workspace.join("package.json");
+        let pkg_contents = match std::fs::read_to_string(&pkg_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut pkg: serde_json::Value = match serde_json::from_str(&pkg_contents) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let current_globs: Vec<String> = match pkg.get("workspaces") {
+            Some(serde_json::Value::Array(arr)) => {
+                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+            }
+            Some(serde_json::Value::Object(obj)) => {
+                obj.get("packages")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default()
+            }
+            _ => return,
+        };
+
+        let mut covered_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        for pattern in &current_globs {
+            let full_pattern = format!("{}/{}", workspace.display(), pattern);
+            if let Ok(matches) = glob::glob(&full_pattern) {
+                for entry in matches.flatten() {
+                    if entry.is_dir() {
+                        covered_dirs.insert(entry);
+                    }
+                }
+            }
+        }
+
+        let mut new_dirs: Vec<String> = Vec::new();
+        for entry in walkdir::WalkDir::new(workspace)
+            .max_depth(4)
+            .into_iter()
+            .filter_entry(|e| {
+                let name = e.file_name().to_string_lossy();
+                name != "node_modules" && name != ".git" && name != "dist" && name != ".next"
+            })
+            .filter_map(|e| e.ok())
+        {
+            if entry.file_name() != "tsconfig.json" || entry.depth() == 0 {
+                continue;
+            }
+            let parent = match entry.path().parent() {
+                Some(p) => p.to_path_buf(),
+                None => continue,
+            };
+
+            if covered_dirs.contains(&parent) {
+                continue;
+            }
+
+            if !has_ts_js_files(&parent) {
+                continue;
+            }
+
+            if let Ok(rel) = parent.strip_prefix(workspace) {
+                let rel_str = rel.to_string_lossy().to_string();
+                if !rel_str.is_empty() && !rel_str.contains("node_modules") {
+                    new_dirs.push(rel_str);
+                }
+            }
+        }
+
+        if new_dirs.is_empty() {
+            return;
+        }
+
+        info!(
+            "Adding {} uncovered tsconfig.json directories to workspaces: {:?}",
+            new_dirs.len(), new_dirs
+        );
+
+        match pkg.get_mut("workspaces") {
+            Some(serde_json::Value::Array(arr)) => {
+                for d in &new_dirs {
+                    arr.push(serde_json::Value::String(d.clone()));
+                }
+            }
+            Some(serde_json::Value::Object(obj)) => {
+                if let Some(packages) = obj.get_mut("packages").and_then(|v| v.as_array_mut()) {
+                    for d in &new_dirs {
+                        packages.push(serde_json::Value::String(d.clone()));
+                    }
+                }
+            }
+            _ => return,
+        }
+
+        if let Ok(updated) = serde_json::to_string_pretty(&pkg) {
+            if let Err(e) = std::fs::write(&pkg_path, updated) {
+                warn!("Failed to write updated package.json with new workspace dirs: {}", e);
+                return;
+            }
+        }
+
+        let mut gen_count = 0u32;
+        for rel_dir in &new_dirs {
+            let abs_dir = workspace.join(rel_dir);
+            if abs_dir.join("package.json").exists() {
+                continue;
+            }
+            let pkg_name = rel_dir.replace('/', "-").replace('\\', "-");
+            let pkg_json = format!(
+                r#"{{"name": "{}", "version": "0.0.0", "private": true}}"#,
+                pkg_name
+            );
+            match std::fs::write(abs_dir.join("package.json"), &pkg_json) {
+                Ok(_) => gen_count += 1,
+                Err(e) => warn!("Failed to write package.json for {:?}: {}", rel_dir, e),
+            }
+        }
+        if gen_count > 0 {
+            info!("Generated {} package.json files for new workspace dirs", gen_count);
         }
     }
 
@@ -1087,20 +1317,18 @@ impl IndexerOrchestrator {
         }
     }
 
-    /// Run scip-go on each Go module directory with a given GOWORK environment.
-    /// Returns true if at least one module was indexed successfully.
+    /// Run scip-go on each Go module directory, rewrite paths to repo-relative,
+    /// and merge all outputs. Returns true if at least one succeeded.
     fn run_go_modules_with_env(
         &self, go_mod_dirs: &[PathBuf], output: &Path, gowork_env: &Option<String>,
     ) -> bool {
-        let mut any_success = false;
+        let mut successful_outputs: Vec<PathBuf> = Vec::new();
+
         for (i, dir) in go_mod_dirs.iter().enumerate() {
-            // Create a writable copy of the module directory.
-            // The codebase mount is read-only, but `go mod download` needs to write
-            // go.sum, and scip-go may need to write temporary files.
+            // Writable copy needed for go.sum writes on read-only mounts
             let writable_dir = self.create_writable_go_module(dir, i);
             let work_dir = writable_dir.as_deref().unwrap_or(dir);
 
-            // Pre-download deps — pass GOWORK so cross-module deps resolve
             self.download_go_deps_with_env(work_dir, gowork_env);
 
             let sub_output = self.output_dir.join(format!("go-{}.scip", i));
@@ -1109,9 +1337,7 @@ impl IndexerOrchestrator {
             let binary = self.get_bundled_path("scip-go")
                 .unwrap_or_else(|| PathBuf::from("scip-go"));
             let mut cmd = Command::new(&binary);
-            // Run scip-go from the ORIGINAL module directory, not the writable copy.
-            // Go resolves modules by walking up from a file's real path (through symlinks),
-            // so it never finds go.mod in the writable dir with symlinked sources.
+            // Run from original dir (Go resolves modules via real paths, not symlinks)
             cmd.current_dir(dir)
                 .args(["--output", sub_output_str]);
             if let Some(ref gowork_path) = gowork_env {
@@ -1120,13 +1346,19 @@ impl IndexerOrchestrator {
 
             match cmd.output().with_context(|| format!("Failed to run scip-go in {:?}", dir)) {
                 Ok(output_result) if output_result.status.success() => {
-                    any_success = true;
                     info!("scip-go succeeded for {:?}", dir);
-                    // Use first successful output as the main output file
-                    if !output.exists() {
-                        if let Err(e) = std::fs::rename(&sub_output, output) {
-                            warn!("Failed to rename Go sub-output: {}", e);
+                    if sub_output.exists() {
+                        if let Ok(rel) = dir.strip_prefix(&self.codebase_path) {
+                            let rel_str = rel.to_string_lossy();
+                            if !rel_str.is_empty() {
+                                let prefix = format!("{}/", rel_str.trim_end_matches('/'));
+                                info!("Rewriting SCIP paths with prefix {:?}", prefix);
+                                if let Err(e) = Self::rewrite_scip_paths(&sub_output, &prefix) {
+                                    warn!("Failed to rewrite SCIP paths for {:?}: {}", dir, e);
+                                }
+                            }
                         }
+                        successful_outputs.push(sub_output);
                     }
                 }
                 Ok(output_result) => {
@@ -1136,7 +1368,223 @@ impl IndexerOrchestrator {
                 Err(e) => warn!("scip-go failed for {:?}: {}", dir, e),
             }
         }
-        any_success
+
+        if successful_outputs.is_empty() {
+            return false;
+        }
+
+        if successful_outputs.len() == 1 {
+            if let Err(e) = std::fs::rename(&successful_outputs[0], output) {
+                warn!("Failed to rename Go sub-output: {}", e);
+                return false;
+            }
+        } else {
+            info!("Merging {} Go SCIP outputs into {:?}", successful_outputs.len(), output);
+            match Self::merge_scip_outputs(&successful_outputs, output) {
+                Ok(()) => info!("Successfully merged {} Go SCIP outputs", successful_outputs.len()),
+                Err(e) => {
+                    warn!("Failed to merge Go SCIP outputs: {}, using first output only", e);
+                    if let Err(e2) = std::fs::rename(&successful_outputs[0], output) {
+                        warn!("Failed to rename first Go sub-output: {}", e2);
+                        return false;
+                    }
+                }
+            }
+        }
+
+        for path in &successful_outputs {
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+
+        true
+    }
+
+    /// Merge multiple SCIP protobuf files by concatenating raw bytes.
+    /// Valid because protobuf repeated fields append on concat.
+    fn merge_scip_outputs(inputs: &[PathBuf], output: &Path) -> Result<()> {
+        use std::io::Write;
+        let mut out_file = std::fs::File::create(output)
+            .context("Failed to create merged SCIP output")?;
+        for input in inputs {
+            let data = std::fs::read(input)
+                .with_context(|| format!("Failed to read SCIP output {:?}", input))?;
+            out_file.write_all(&data)
+                .with_context(|| format!("Failed to write SCIP data from {:?}", input))?;
+        }
+        Ok(())
+    }
+
+    /// Rewrite SCIP document paths by prepending a prefix (module-relative → repo-relative).
+    /// Operates at protobuf wire level: Index.documents (field 2), Document.relative_path (field 1).
+    fn rewrite_scip_paths(scip_path: &Path, prefix: &str) -> Result<()> {
+        let data = std::fs::read(scip_path)
+            .with_context(|| format!("Failed to read SCIP file {:?}", scip_path))?;
+
+        let rewritten = Self::rewrite_index_document_paths(&data, prefix)?;
+
+        std::fs::write(scip_path, &rewritten)
+            .with_context(|| format!("Failed to write rewritten SCIP file {:?}", scip_path))?;
+
+        Ok(())
+    }
+
+    /// Walk Index wire format, rewrite Document relative_path fields.
+    fn rewrite_index_document_paths(data: &[u8], prefix: &str) -> Result<Vec<u8>> {
+        let mut output = Vec::with_capacity(data.len() + data.len() / 10);
+        let mut pos = 0;
+
+        while pos < data.len() {
+            let (tag, tag_end) = Self::pb_read_varint(data, pos)
+                .ok_or_else(|| anyhow!("Truncated varint at position {}", pos))?;
+            let field_number = tag >> 3;
+            let wire_type = tag & 0x07;
+
+            match wire_type {
+                0 => { // varint
+                    let (_, val_end) = Self::pb_read_varint(data, tag_end)
+                        .ok_or_else(|| anyhow!("Truncated varint value"))?;
+                    output.extend_from_slice(&data[pos..val_end]);
+                    pos = val_end;
+                }
+                1 => { // fixed64
+                    let end = tag_end + 8;
+                    if end > data.len() { break; }
+                    output.extend_from_slice(&data[pos..end]);
+                    pos = end;
+                }
+                2 => { // length-delimited
+                    let (field_len, data_start) = Self::pb_read_varint(data, tag_end)
+                        .ok_or_else(|| anyhow!("Truncated length prefix"))?;
+                    let field_end = data_start + field_len as usize;
+                    if field_end > data.len() { break; }
+
+                    if field_number == 2 {
+                        // Document submessage — rewrite its relative_path field
+                        let doc_bytes = &data[data_start..field_end];
+                        let new_doc = Self::rewrite_document_path(doc_bytes, prefix);
+                        Self::pb_write_varint(&mut output, tag);
+                        Self::pb_write_varint(&mut output, new_doc.len() as u64);
+                        output.extend_from_slice(&new_doc);
+                    } else {
+                        // Non-document field (metadata, external_symbols) — copy as-is
+                        output.extend_from_slice(&data[pos..field_end]);
+                    }
+                    pos = field_end;
+                }
+                5 => { // fixed32
+                    let end = tag_end + 4;
+                    if end > data.len() { break; }
+                    output.extend_from_slice(&data[pos..end]);
+                    pos = end;
+                }
+                _ => break,
+            }
+        }
+
+        Ok(output)
+    }
+
+    /// Rewrite a single Document's relative_path (field 1) by prepending a prefix.
+    fn rewrite_document_path(doc_bytes: &[u8], prefix: &str) -> Vec<u8> {
+        let mut output = Vec::with_capacity(doc_bytes.len() + prefix.len());
+        let mut pos = 0;
+
+        while pos < doc_bytes.len() {
+            let (tag, tag_end) = match Self::pb_read_varint(doc_bytes, pos) {
+                Some(v) => v,
+                None => break,
+            };
+            let field_number = tag >> 3;
+            let wire_type = tag & 0x07;
+
+            match wire_type {
+                0 => {
+                    match Self::pb_read_varint(doc_bytes, tag_end) {
+                        Some((_, val_end)) => {
+                            output.extend_from_slice(&doc_bytes[pos..val_end]);
+                            pos = val_end;
+                        }
+                        None => break,
+                    }
+                }
+                1 => {
+                    let end = tag_end + 8;
+                    if end > doc_bytes.len() { break; }
+                    output.extend_from_slice(&doc_bytes[pos..end]);
+                    pos = end;
+                }
+                2 => {
+                    let (field_len, data_start) = match Self::pb_read_varint(doc_bytes, tag_end) {
+                        Some(v) => v,
+                        None => break,
+                    };
+                    let field_end = data_start + field_len as usize;
+                    if field_end > doc_bytes.len() { break; }
+
+                    if field_number == 1 {
+                        // relative_path (string, field 1) — prepend prefix
+                        let old_path = &doc_bytes[data_start..field_end];
+                        // Skip paths starting with ../ (build cache artifacts)
+                        if old_path.starts_with(b"../") {
+                            output.extend_from_slice(&doc_bytes[pos..field_end]);
+                        } else {
+                            let new_len = prefix.len() + old_path.len();
+                            Self::pb_write_varint(&mut output, tag);
+                            Self::pb_write_varint(&mut output, new_len as u64);
+                            output.extend_from_slice(prefix.as_bytes());
+                            output.extend_from_slice(old_path);
+                        }
+                    } else {
+                        output.extend_from_slice(&doc_bytes[pos..field_end]);
+                    }
+                    pos = field_end;
+                }
+                5 => {
+                    let end = tag_end + 4;
+                    if end > doc_bytes.len() { break; }
+                    output.extend_from_slice(&doc_bytes[pos..end]);
+                    pos = end;
+                }
+                _ => break,
+            }
+        }
+
+        output
+    }
+
+    /// Read a protobuf varint from data at the given position.
+    /// Returns (value, position_after_varint) or None if truncated.
+    fn pb_read_varint(data: &[u8], mut pos: usize) -> Option<(u64, usize)> {
+        let mut result: u64 = 0;
+        let mut shift = 0;
+        while pos < data.len() {
+            let b = data[pos] as u64;
+            result |= (b & 0x7F) << shift;
+            pos += 1;
+            if (b & 0x80) == 0 {
+                return Some((result, pos));
+            }
+            shift += 7;
+            if shift >= 64 { return None; }
+        }
+        None
+    }
+
+    /// Write a protobuf varint to a byte buffer.
+    fn pb_write_varint(buf: &mut Vec<u8>, mut value: u64) {
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            buf.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
     }
 
     /// Create a writable copy of a Go module directory so go.sum can be written.
@@ -1223,11 +1671,12 @@ impl IndexerOrchestrator {
         Some(result)
     }
 
-    /// Find directories containing go.mod files (up to 3 levels deep)
+    /// Find directories containing go.mod files (up to 5 levels deep).
+    /// Depth 5 handles nested modules like apps/otel-collector/exporter/go.mod.
     fn find_go_modules(&self) -> Vec<PathBuf> {
         let mut results = Vec::new();
         for entry in walkdir::WalkDir::new(&self.codebase_path)
-            .max_depth(3)
+            .max_depth(5)
             .into_iter()
             .flatten()
         {
@@ -1709,5 +2158,183 @@ mod tests {
         assert_eq!(Language::TypeScript.scip_indexer(), "scip-typescript");
         assert!(Language::TypeScript.is_bundled());
         assert!(!Language::Ruby.is_bundled());
+    }
+
+    fn create_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn make_orchestrator(workspace: &Path) -> IndexerOrchestrator {
+        IndexerOrchestrator {
+            indexers_path: None,
+            codebase_path: workspace.to_path_buf(),
+            output_dir: workspace.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn test_has_ts_js_files_positive() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("myapp");
+        create_file(&dir.join("src/index.ts"), "export const x = 1;");
+        assert!(has_ts_js_files(&dir));
+    }
+
+    #[test]
+    fn test_has_ts_js_files_negative() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("myapp");
+        create_file(&dir.join("main.go"), "package main");
+        create_file(&dir.join("lib.rs"), "fn main() {}");
+        assert!(!has_ts_js_files(&dir));
+    }
+
+    #[test]
+    fn test_ensure_nx_package_jsons_generates_for_ts_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path();
+
+        create_file(&ws.join("nx.json"), "{}");
+        create_file(
+            &ws.join("package.json"),
+            r#"{"name": "root", "workspaces": ["apps/*", "libs/*"]}"#,
+        );
+        create_file(&ws.join("apps/dashboard/project.json"), "{}");
+        create_file(&ws.join("apps/dashboard/src/App.tsx"), "export default () => <div/>;");
+
+        let orch = make_orchestrator(ws);
+        orch.ensure_nx_package_jsons(ws);
+
+        let generated = ws.join("apps/dashboard/package.json");
+        assert!(generated.exists(), "package.json should be generated");
+
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&generated).unwrap()).unwrap();
+        assert_eq!(content["name"], "apps-dashboard");
+        assert_eq!(content["private"], true);
+    }
+
+    #[test]
+    fn test_ensure_nx_package_jsons_skips_existing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path();
+
+        create_file(&ws.join("nx.json"), "{}");
+        create_file(
+            &ws.join("package.json"),
+            r#"{"name": "root", "workspaces": ["libs/*"]}"#,
+        );
+
+        let existing_pkg = r#"{"name": "@myorg/ui", "version": "1.0.0"}"#;
+        create_file(&ws.join("libs/ui/project.json"), "{}");
+        create_file(&ws.join("libs/ui/package.json"), existing_pkg);
+        create_file(&ws.join("libs/ui/src/index.ts"), "export const x = 1;");
+
+        let orch = make_orchestrator(ws);
+        orch.ensure_nx_package_jsons(ws);
+
+        let content = std::fs::read_to_string(ws.join("libs/ui/package.json")).unwrap();
+        assert_eq!(content, existing_pkg);
+    }
+
+    #[test]
+    fn test_ensure_nx_package_jsons_skips_non_ts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path();
+
+        create_file(&ws.join("nx.json"), "{}");
+        create_file(
+            &ws.join("package.json"),
+            r#"{"name": "root", "workspaces": ["apps/*"]}"#,
+        );
+
+        create_file(&ws.join("apps/backend/project.json"), "{}");
+        create_file(&ws.join("apps/backend/main.go"), "package main");
+
+        let orch = make_orchestrator(ws);
+        orch.ensure_nx_package_jsons(ws);
+
+        assert!(
+            !ws.join("apps/backend/package.json").exists(),
+            "package.json should NOT be generated for Go-only dir"
+        );
+    }
+
+    #[test]
+    fn test_ensure_nx_package_jsons_noop_without_nx() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path();
+
+        create_file(
+            &ws.join("package.json"),
+            r#"{"name": "root", "workspaces": ["packages/*"]}"#,
+        );
+        create_file(&ws.join("packages/foo/project.json"), "{}");
+        create_file(&ws.join("packages/foo/src/index.ts"), "export const x = 1;");
+
+        let orch = make_orchestrator(ws);
+        orch.ensure_nx_package_jsons(ws);
+
+        assert!(
+            !ws.join("packages/foo/package.json").exists(),
+            "should be no-op without nx.json"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_scip_document_paths() {
+        let mut doc_bytes = Vec::new();
+        IndexerOrchestrator::pb_write_varint(&mut doc_bytes, 10); // field 1, length-delimited
+        IndexerOrchestrator::pb_write_varint(&mut doc_bytes, 7);
+        doc_bytes.extend_from_slice(b"main.go");
+
+        let mut index_bytes = Vec::new();
+        IndexerOrchestrator::pb_write_varint(&mut index_bytes, 18); // field 2, length-delimited
+        IndexerOrchestrator::pb_write_varint(&mut index_bytes, doc_bytes.len() as u64);
+        index_bytes.extend_from_slice(&doc_bytes);
+
+        let rewritten = IndexerOrchestrator::rewrite_index_document_paths(
+            &index_bytes, "libs/common-go/"
+        ).unwrap();
+
+        let (tag, tag_end) = IndexerOrchestrator::pb_read_varint(&rewritten, 0).unwrap();
+        assert_eq!(tag >> 3, 2);
+        let (doc_len, doc_start) = IndexerOrchestrator::pb_read_varint(&rewritten, tag_end).unwrap();
+        let new_doc = &rewritten[doc_start..doc_start + doc_len as usize];
+
+        let (inner_tag, inner_tag_end) = IndexerOrchestrator::pb_read_varint(new_doc, 0).unwrap();
+        assert_eq!(inner_tag >> 3, 1);
+        let (path_len, path_start) = IndexerOrchestrator::pb_read_varint(new_doc, inner_tag_end).unwrap();
+        let path = std::str::from_utf8(&new_doc[path_start..path_start + path_len as usize]).unwrap();
+        assert_eq!(path, "libs/common-go/main.go");
+    }
+
+    #[test]
+    fn test_rewrite_skips_dotdot_paths() {
+        let mut doc_bytes = Vec::new();
+        IndexerOrchestrator::pb_write_varint(&mut doc_bytes, 10);
+        let old_path = b"../vendor/pkg.go";
+        IndexerOrchestrator::pb_write_varint(&mut doc_bytes, old_path.len() as u64);
+        doc_bytes.extend_from_slice(old_path);
+
+        let result = IndexerOrchestrator::rewrite_document_path(&doc_bytes, "apps/cli/");
+
+        let (_, tag_end) = IndexerOrchestrator::pb_read_varint(&result, 0).unwrap();
+        let (path_len, path_start) = IndexerOrchestrator::pb_read_varint(&result, tag_end).unwrap();
+        let path = std::str::from_utf8(&result[path_start..path_start + path_len as usize]).unwrap();
+        assert_eq!(path, "../vendor/pkg.go", "paths starting with ../ should not be prefixed");
+    }
+
+    #[test]
+    fn test_pb_varint_roundtrip() {
+        for &value in &[0u64, 1, 127, 128, 300, 16384, 1_000_000, u64::MAX] {
+            let mut buf = Vec::new();
+            IndexerOrchestrator::pb_write_varint(&mut buf, value);
+            let (decoded, _) = IndexerOrchestrator::pb_read_varint(&buf, 0).unwrap();
+            assert_eq!(decoded, value, "varint roundtrip failed for {}", value);
+        }
     }
 }

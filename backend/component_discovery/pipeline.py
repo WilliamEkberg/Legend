@@ -5,14 +5,15 @@ Pipeline orchestrator: SCIP + DB modules -> components in DB.
 Phase 1 — Nodes (steps 1-10):
 1. Filter SCIP to module scope
 2. Split source/test files
-3. Build weighted graph (call + import + inheritance)
-4. Leiden clustering with auto-resolution
-5. Post-cluster redistribution
-6. Name components by dominant directory
-7. Extract per-file metadata
-8. LLM refinement per cluster
-9. Reconcile misplaced files
-10. Assign test files
+2b. Partition files by directory (hierarchical decomposition)
+3. Per-partition: build weighted graph (log-weighted, noise-filtered)
+4. Per-partition: directory affinity (star topology for large dirs) + hub dampening
+5. Per-partition: Leiden clustering with targeted resolution sweep
+6. Merge partition results, strip virtual nodes
+7. Post-cluster redistribution
+8. Name components by dominant directory
+9. Extract per-file metadata + LLM refinement
+10. Reconcile misplaced files + assign test files
 
 Phase 2 — Edges (steps 11-13):
 11. Aggregate: combine file edges into one edge per component pair
@@ -30,8 +31,10 @@ from component_discovery.scip_filter import parse_scip_for_module
 from component_discovery.test_filter import is_test_file, split_source_and_test
 from component_discovery.graph_builder import (
     build_file_graph, add_directory_affinity, dampen_hubs, auto_resolution,
+    strip_virtual_nodes,
 )
-from component_discovery.leiden_cluster import run_leiden
+from component_discovery.leiden_cluster import run_leiden, run_leiden_targeted
+from component_discovery.partitioner import partition_files
 from component_discovery.component_namer import name_components
 from component_discovery.metadata_extractor import extract_file_metadata
 from component_discovery.cluster_analyzer import (
@@ -41,6 +44,10 @@ from component_discovery.edge_aggregator import aggregate_component_edges
 from component_discovery.edge_labeler import label_component_edges
 from component_discovery.llm_client import LLMClient
 
+MAX_COMPONENTS = 25
+MIN_COMPONENTS = 3
+FILES_PER_COMPONENT = 1000
+
 
 def discover_components(
     conn: sqlite3.Connection,
@@ -49,6 +56,7 @@ def discover_components(
     source_dir: str,
     client: LLMClient | None = None,
     run_id: int | None = None,
+    target_components: int | None = None,
     log_fn: callable = print,
 ) -> None:
     """
@@ -61,6 +69,7 @@ def discover_components(
         source_dir: Path to source directory root
         client: LLMClient instance (creates one if not provided)
         run_id: Pipeline run ID
+        target_components: Desired number of output components (auto-computed if None)
     """
     module_id = module["id"]
     module_name = module["name"]
@@ -98,46 +107,83 @@ def discover_components(
 
     log_fn(f"  [2/9] Files: {len(source_files)} source, {len(test_files)} test")
 
-    # Step 3: Build weighted graph
-    log_fn(f"  [3/9] Building dependency graph...")
-    graph = build_file_graph(parsed, source_files)
+    if target_components is None:
+        target_components = min(MAX_COMPONENTS, max(MIN_COMPONENTS, len(source_files) // FILES_PER_COMPONENT))
 
-    # Step 4: Directory affinity + hub dampening
-    graph = add_directory_affinity(graph)
-    graph = dampen_hubs(graph)
-    log_fn(f"  [4/9] Graph: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges (affinity + hub dampening applied)")
+    partitions = partition_files(source_files, target_components=target_components)
+    use_partitioning = len(partitions) > 1
 
-    # Step 5: Leiden clustering
-    resolution = auto_resolution(graph)
-    log_fn(f"  [5/9] Leiden clustering (resolution={resolution:.3f})...")
-    clusters = run_leiden(graph, resolution=resolution)
+    if use_partitioning:
+        log_fn(f"  [2b/9] Partitioned into {len(partitions)} groups "
+               f"(sizes: {sorted([len(p) for p in partitions], reverse=True)[:5]}{'...' if len(partitions) > 5 else ''})")
+    else:
+        log_fn(f"  [2b/9] Single partition (flat repo), no hierarchical decomposition")
+
+    all_clusters = {}
+    all_virtual_nodes = set()
+    total_edges_count = 0
+    cluster_id_offset = 0
+
+    for part_idx, partition in enumerate(partitions):
+        graph = build_file_graph(parsed, partition)
+        graph, virtual_nodes = add_directory_affinity(graph)
+        all_virtual_nodes.update(virtual_nodes)
+        graph = dampen_hubs(graph)
+        total_edges_count += graph.number_of_edges()
+
+        avg_deg = graph.graph.get("avg_structural_degree", 0.0)
+        if use_partitioning:
+            log_fn(f"    [partition {part_idx+1}/{len(partitions)}] "
+                   f"{graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges, "
+                   f"avg_degree={avg_deg:.1f}")
+
+        target_per_partition = max(2, target_components * len(partition) // len(source_files))
+
+        if graph.number_of_nodes() <= 1:
+            clusters = {f: cluster_id_offset for f in partition}
+        else:
+            clusters = run_leiden_targeted(
+                graph,
+                target_components=target_per_partition,
+                seed=42,
+            )
+            clusters = strip_virtual_nodes(clusters, virtual_nodes)
+
+        for f, c in clusters.items():
+            all_clusters[f] = c + cluster_id_offset
+
+        if clusters:
+            cluster_id_offset += max(clusters.values()) + 1
+
+    clusters = all_clusters
     n_raw_clusters = len(set(clusters.values()))
-    log_fn(f"  [5/9] Leiden: {n_raw_clusters} initial cluster(s)")
 
-    # Step 6: Post-cluster redistribution
+    if not use_partitioning:
+        log_fn(f"  [4/9] Graph: {total_edges_count} edges (log-weighted, noise-filtered, star topology, hub dampened)")
+    log_fn(f"  [5/9] Leiden: {n_raw_clusters} initial cluster(s) (target={target_components})")
+
+    if n_raw_clusters > target_components * 3:
+        clusters = _merge_small_clusters(clusters, target_components)
+        n_after = len(set(clusters.values()))
+        log_fn(f"  [5b/9] Directory merge: {n_raw_clusters} -> {n_after} clusters")
+
     clusters_before = dict(clusters)
     clusters = _redistribute_hubs(clusters, parsed["call_edges"], source_files)
     moves = sum(1 for f, c in clusters.items() if clusters_before.get(f) != c)
     if moves:
         log_fn(f"  [6/9] Hub redistribution: {moves} file(s) moved to better-fit clusters")
 
-    # Step 7: Name components by dominant directory
     named = name_components(clusters)
-
-    # Group files by component name
     comp_files = defaultdict(list)
     for file_path, comp_name in named.items():
         comp_files[comp_name].append(file_path)
 
-    # Step 8: Extract per-file metadata
     log_fn(f"  [7/9] Extracting per-file metadata...")
     file_metadata = extract_file_metadata(scip_path, source_dir, source_files)
 
-    # Step 9: LLM refinement
     if client is None:
         client = LLMClient()
 
-    # Convert to cluster_id -> files for analyzer
     cluster_id_files = defaultdict(list)
     for file_path, cluster_id in clusters.items():
         cluster_id_files[cluster_id].append(file_path)
@@ -147,12 +193,10 @@ def discover_components(
         cluster_id_files, file_metadata, parsed["call_edges"], client, log_fn=log_fn
     )
 
-    # Step 10: Reconcile misplaced files
     if misplaced:
         log_fn(f"  [8/9] Reconciling {len(misplaced)} misplaced file suggestion(s)...")
     components = reconcile_misplaced_files(components, misplaced)
 
-    # Step 11: Assign test files
     test_assignments = _assign_test_files(
         test_files, parsed["call_edges"], components
     )
@@ -270,6 +314,64 @@ def discover_all_components(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _merge_small_clusters(
+    clusters: dict[str, int],
+    target_components: int,
+) -> dict[str, int]:
+    """Merge smallest clusters into most directory-similar cluster via Jaccard on depth-2 prefixes."""
+    cluster_files: dict[int, set[str]] = defaultdict(set)
+    for f, c in clusters.items():
+        cluster_files[c].add(f)
+
+    def _dir_prefixes(files: set[str]) -> set[str]:
+        """Depth-2 directory prefixes for a set of files."""
+        prefixes = set()
+        for f in files:
+            parts = PurePosixPath(f).parts
+            if len(parts) > 2:
+                prefixes.add("/".join(parts[:2]))
+            elif len(parts) > 1:
+                prefixes.add(parts[0])
+        return prefixes
+
+    while len(cluster_files) > target_components:
+        smallest_id = min(cluster_files, key=lambda c: len(cluster_files[c]))
+        smallest_files = cluster_files[smallest_id]
+        smallest_prefixes = _dir_prefixes(smallest_files)
+
+        best_id = None
+        best_score = -1.0
+        best_size = float("inf")
+
+        for cid, cfiles in cluster_files.items():
+            if cid == smallest_id:
+                continue
+            other_prefixes = _dir_prefixes(cfiles)
+            if smallest_prefixes or other_prefixes:
+                intersection = len(smallest_prefixes & other_prefixes)
+                union = len(smallest_prefixes | other_prefixes)
+                jaccard = intersection / union if union else 0.0
+            else:
+                jaccard = 0.0
+
+            if jaccard > best_score or (jaccard == best_score and len(cfiles) < best_size):
+                best_score = jaccard
+                best_id = cid
+                best_size = len(cfiles)
+
+        if best_id is None:
+            break
+
+        cluster_files[best_id].update(smallest_files)
+        del cluster_files[smallest_id]
+
+    result = {}
+    for cid, files in cluster_files.items():
+        for f in files:
+            result[f] = cid
+    return result
+
 
 def _redistribute_hubs(
     clusters: dict[str, int],

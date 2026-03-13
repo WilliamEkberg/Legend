@@ -10,7 +10,7 @@ import re
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
 
-from component_discovery.scip_pb2 import Index
+from component_discovery.scip_parser import load_scip_index
 
 # Symbol kind enum values -> readable names
 _KIND_NAMES = {
@@ -106,9 +106,9 @@ def extract_file_metadata(
     # Collect all SCIP documents across all index files
     all_documents = []
     for sp in scip_paths:
-        index = Index()
-        with open(sp, "rb") as f:
-            index.ParseFromString(f.read())
+        index = load_scip_index(sp)
+        if index is None:
+            continue
         all_documents.extend(index.documents)
 
     # Build raw-path -> normalized-path mapping.

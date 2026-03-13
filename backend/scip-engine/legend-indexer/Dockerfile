@@ -58,6 +58,8 @@ RUN touch src/main.rs src/lib.rs && cargo build --release
 # Build it with: ./build-base.sh
 FROM legend-indexer-base:latest
 
+ENV PATH="/root/.cargo/bin:/usr/local/go/bin:/root/go/bin:/usr/share/dotnet:/root/.dotnet/tools:${PATH}"
+
 # Copy legend-indexer binary
 COPY --from=rust-build /build/target/release/legend-indexer /usr/local/bin/legend-indexer
 

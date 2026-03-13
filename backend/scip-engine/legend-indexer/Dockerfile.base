@@ -134,6 +134,15 @@ RUN case "${TARGETARCH}" in \
     && cs bootstrap com.sourcegraph:scip-java_2.13:0.11.1 -M com.sourcegraph.scip_java.ScipJava -f -o /usr/local/bin/scip-java
 
 # ============================================
+# Rust (rust-analyzer for SCIP indexing)
+# ============================================
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && . /root/.cargo/env \
+    && rustup component add rust-analyzer
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# ============================================
 # PHP indexer (scip-php)
 # ============================================
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer \
@@ -154,6 +163,8 @@ RUN echo "=== Verifying base image installations ===" \
     && echo "Python: $(python3 --version)" \
     && echo "Java: $(java --version 2>&1 | head -1)" \
     && echo "PHP: $(php8.3 --version | head -1)" \
+    && echo "Rust: $(rustc --version)" \
+    && echo "rust-analyzer: $(rust-analyzer --version 2>&1 | head -1)" \
     && echo "scip CLI: $(scip --version 2>&1 | head -1 || echo 'installed')" \
     && echo "=== Base image ready ==="
 

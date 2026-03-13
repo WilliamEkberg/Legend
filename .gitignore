@@ -15,6 +15,7 @@ node_modules/
 dist/
 target/
 output/
+output_daytona/
 
 # OS files
 .DS_Store
@@ -37,3 +38,4 @@ output/
 Example_code_to_map/
 Context/
 CLAUDE.md
+backend/scip-engine/test-repos/
