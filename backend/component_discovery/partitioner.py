@@ -20,7 +20,7 @@ def partition_files(
     groups = defaultdict(set)
     for path in source_files:
         parts = PurePosixPath(path).parts
-            if len(parts) > depth:
+        if len(parts) > depth:
             prefix = "/".join(parts[:depth])
         elif len(parts) > 1:
             prefix = "/".join(parts[:-1])

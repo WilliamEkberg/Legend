@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install dependencies
-        run: grep '^  - ' environment.yml | sed 's/^  - //' | pip install -r /dev/stdin
+        run: pip install -r backend/requirements.txt
       - name: Run tests
         run: python -m pytest backend/tests/ -v --tb=short
 

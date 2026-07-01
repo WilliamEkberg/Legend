@@ -206,7 +206,7 @@ trap cleanup EXIT INT TERM
 # Start backend
 echo "Starting backend (FastAPI) on http://localhost:8000..."
 cd "$ROOT_DIR/backend"
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload &
 BACKEND_PID=$!
 
 # Start Tauri desktop app (includes Vite dev server)
