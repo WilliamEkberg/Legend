@@ -13,7 +13,8 @@ python:
   - networkx>=3.0
   - igraph>=0.11
   - leidenalg>=0.10
-  - litellm
+  - litellm>=1.0,<2.0
+  - mcp>=1.0,<2.0
 
   # Testing
   - pytest

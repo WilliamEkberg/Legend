@@ -162,7 +162,7 @@ Write-Host ""
 Write-Host "Starting backend (FastAPI) on http://localhost:8000..." -ForegroundColor Yellow
 # Note: --reload is disabled on Windows because it breaks asyncio subprocess support
 $backendProcess = Start-Process -FilePath "$VENV_DIR\Scripts\python.exe" `
-    -ArgumentList "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000" `
+    -ArgumentList "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", "8000" `
     -WorkingDirectory "$ROOT_DIR\backend" `
     -PassThru `
     -NoNewWindow
