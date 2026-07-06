@@ -58,6 +58,7 @@ import { ChatPanel } from "./ChatPanel";
 import { MapChatBar } from "./MapChatBar";
 import { ThemeToggle } from "../ThemeToggle";
 import { Button } from "@/components/ui/button";
+import { getApiKey } from "@/lib/secrets";
 
 const nodeTypes = {
   mapNode: MapNode,
@@ -150,7 +151,7 @@ function MapViewInner() {
   }, [refreshValidation]);
 
   const handleGenerateTickets = useCallback(async () => {
-    const apiKey = localStorage.getItem("legend:apiKey") ?? "";
+    const apiKey = getApiKey();
     if (!apiKey) {
       alert("No API key found. Enter your API key in the launcher first.");
       return;

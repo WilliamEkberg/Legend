@@ -20,6 +20,7 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -60,6 +61,24 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# When Legend runs as a packaged Tauri desktop app the webview is served from the
+# custom protocol origin (tauri://localhost / http://tauri.localhost) and calls the
+# backend on http://127.0.0.1:<port>, so those cross-origin POST-JSON requests
+# preflight. In dev everything is same-origin via the Vite proxy, so this is a
+# no-op there. Kept deliberately narrow: only the Tauri/localhost origins, no "*"
+# with credentials.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+    ],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 SCIP_ENGINE_DIR = Path(__file__).resolve().parent / "scip-engine"
 

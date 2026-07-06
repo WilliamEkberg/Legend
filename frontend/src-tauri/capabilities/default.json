@@ -18,6 +18,11 @@
     {
       "identifier": "fs:allow-mkdir",
       "allow": [{ "path": "$HOME/**" }]
+    },
+    "shell:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "binaries/legend-backend", "sidecar": true }]
     }
   ]
 }

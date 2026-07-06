@@ -4,6 +4,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { runOpenCodeStream, isCreditError, type StreamEvent } from "./api/client";
+import { getApiKey, storeApiKey, purgeLegacyApiKey } from "@/lib/secrets";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -77,7 +78,7 @@ interface OutputLine {
 }
 
 function App() {
-  const [apiKey, setApiKey] = useState(() => loadStored("legend:apiKey", ""));
+  const [apiKey, setApiKey] = useState(() => getApiKey());
   const [provider, setProvider] = useState(() => loadStored("legend:provider", "anthropic"));
   const [model, setModel] = useState(() => {
     const stored = loadStored("legend:model", "");
@@ -106,6 +107,11 @@ function App() {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [lines]);
+
+  // Remove any API key left in plaintext localStorage by older builds.
+  useEffect(() => {
+    purgeLegacyApiKey();
+  }, []);
 
   async function runSingleStep(
     stepName: string,
@@ -284,7 +290,7 @@ function App() {
             <Input
               type="password"
               value={apiKey}
-              onChange={(e) => { setApiKey(e.target.value); persist("legend:apiKey", e.target.value); }}
+              onChange={(e) => { setApiKey(e.target.value); storeApiKey(e.target.value); }}
               placeholder="sk-..."
               spellCheck={false}
               className="font-mono"

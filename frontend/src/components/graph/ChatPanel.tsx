@@ -6,6 +6,7 @@ import type { ChatMessage, ChatMode, ChatEvent, ProposedChange } from "../../dat
 import { sendChatMessage, confirmChatChanges, clearChatSession } from "../../api/client";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { getApiKey } from "@/lib/secrets";
 
 interface ChatPanelProps {
   onClose: () => void;
@@ -25,8 +26,9 @@ export function ChatPanel({ onClose, onNodeSelect, onMapMutated, initialMessage 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Read API config from localStorage (same keys as MapView)
-  const apiKey = localStorage.getItem("legend:apiKey") || "";
+  // API key comes from the session-scoped secrets store; provider/model are
+  // non-sensitive UI prefs still kept in localStorage (same keys as MapView).
+  const apiKey = getApiKey();
   const provider = localStorage.getItem("legend:provider") || "anthropic";
   const model = localStorage.getItem("legend:model") || undefined;
 

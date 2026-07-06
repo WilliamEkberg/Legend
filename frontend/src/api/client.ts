@@ -21,6 +21,30 @@ import type {
   ChatMode,
 } from "../data/types";
 
+// ── API base-URL indirection ──
+// One place decides the backend origin so all fetches work in BOTH dev (Vite
+// proxy) and a packaged Tauri build (served from tauri://localhost, no proxy).
+function resolveApiBase(): string {
+  // Explicit runtime override always wins. The Tauri shell injects this after
+  // it picks the sidecar's dynamic port (see src-tauri/src/lib.rs).
+  const injected = (globalThis as { __LEGEND_API_BASE__?: string })
+    .__LEGEND_API_BASE__;
+  if (injected) return injected.replace(/\/$/, "");
+  // Build-time override for non-Tauri / fixed-origin web builds.
+  const env = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (env) return env.replace(/\/$/, "");
+  // Dev (vite dev / tauri dev): "" -> relative "/api/..." -> Vite proxy.
+  // Prod build with no injection: default to the local backend origin.
+  return import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
+}
+
+export const API_BASE = resolveApiBase();
+
+/** Prefix an "/api/..." path with the resolved base. Pass paths starting with "/". */
+export function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
+
 export interface RunRequest {
   api_key: string;
   provider: string;
@@ -61,7 +85,7 @@ export class CreditError extends Error {
 }
 
 export async function runOpenCode(req: RunRequest): Promise<RunResponse> {
-  const res = await fetch("/api/run", {
+  const res = await fetch(apiUrl("/api/run"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
@@ -78,7 +102,7 @@ export async function updateDecision(
   id: number,
   updates: { text?: string; category?: string; detail?: string | null },
 ): Promise<void> {
-  const res = await fetch(`/api/decisions/${id}`, {
+  const res = await fetch(apiUrl(`/api/decisions/${id}`), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -93,7 +117,7 @@ export async function createDecision(body: {
   component_id?: number;
   detail?: string | null;
 }): Promise<{ id: number }> {
-  const res = await fetch("/api/decisions", {
+  const res = await fetch(apiUrl("/api/decisions"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -103,12 +127,12 @@ export async function createDecision(body: {
 }
 
 export async function deleteDecision(id: number): Promise<void> {
-  const res = await fetch(`/api/decisions/${id}`, { method: "DELETE" });
+  const res = await fetch(apiUrl(`/api/decisions/${id}`), { method: "DELETE" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
 export async function fetchChangeRecords(): Promise<ChangeRecordsResponse> {
-  const res = await fetch("/api/change-records");
+  const res = await fetch(apiUrl("/api/change-records"));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -117,7 +141,7 @@ export async function generateTickets(
   apiKey: string,
   model?: string,
 ): Promise<TicketGenerateResponse> {
-  const res = await fetch("/api/tickets/generate", {
+  const res = await fetch(apiUrl("/api/tickets/generate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: apiKey, model }),
@@ -136,18 +160,18 @@ export async function generateTickets(
 }
 
 export async function fetchTickets(): Promise<{ tickets: SavedTicket[] }> {
-  const res = await fetch("/api/tickets");
+  const res = await fetch(apiUrl("/api/tickets"));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
 export async function deleteModule(id: number): Promise<void> {
-  const res = await fetch(`/api/modules/${id}`, { method: "DELETE" });
+  const res = await fetch(apiUrl(`/api/modules/${id}`), { method: "DELETE" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
 export async function deleteComponent(id: number): Promise<void> {
-  const res = await fetch(`/api/components/${id}`, { method: "DELETE" });
+  const res = await fetch(apiUrl(`/api/components/${id}`), { method: "DELETE" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 }
 
@@ -157,7 +181,7 @@ export async function createModule(body: {
   type?: string;
   technology?: string;
 }): Promise<{ id: number }> {
-  const res = await fetch("/api/modules", {
+  const res = await fetch(apiUrl("/api/modules"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -171,7 +195,7 @@ export async function createComponent(body: {
   name: string;
   purpose?: string;
 }): Promise<{ id: number }> {
-  const res = await fetch("/api/components", {
+  const res = await fetch(apiUrl("/api/components"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -186,7 +210,7 @@ export async function createModuleEdge(body: {
   edge_type: string;
   label?: string;
 }): Promise<{ ok: boolean }> {
-  const res = await fetch("/api/module-edges", {
+  const res = await fetch(apiUrl("/api/module-edges"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -201,7 +225,7 @@ export async function createComponentEdge(body: {
   edge_type: string;
   label?: string;
 }): Promise<{ ok: boolean }> {
-  const res = await fetch("/api/component-edges", {
+  const res = await fetch(apiUrl("/api/component-edges"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -211,7 +235,7 @@ export async function createComponentEdge(body: {
 }
 
 export async function fetchMap(): Promise<MapData> {
-  const res = await fetch("/api/map");
+  const res = await fetch(apiUrl("/api/map"));
 
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -268,7 +292,7 @@ export async function exportLlmContext(): Promise<void> {
 export async function importMap(
   data: Record<string, unknown>,
 ): Promise<{ ok: boolean; summary: Record<string, number> }> {
-  const res = await fetch("/api/map/import", {
+  const res = await fetch(apiUrl("/api/map/import"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -301,7 +325,7 @@ export async function runOpenCodeStream(
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch("/api/run/stream", {
+  const res = await fetch(apiUrl("/api/run/stream"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
@@ -343,7 +367,7 @@ export async function runOpenCodeStream(
 // ── Map Versions ──
 
 export async function fetchVersions(): Promise<{ versions: MapVersion[] }> {
-  const res = await fetch("/api/versions");
+  const res = await fetch(apiUrl("/api/versions"));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -351,7 +375,7 @@ export async function fetchVersions(): Promise<{ versions: MapVersion[] }> {
 export async function fetchVersion(
   id: number,
 ): Promise<{ version: MapVersion; decisions: VersionDecision[] }> {
-  const res = await fetch(`/api/versions/${id}`);
+  const res = await fetch(apiUrl(`/api/versions/${id}`));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -360,7 +384,7 @@ export async function createManualVersion(): Promise<{
   id: number;
   version_number: number;
 }> {
-  const res = await fetch("/api/versions", { method: "POST" });
+  const res = await fetch(apiUrl("/api/versions"), { method: "POST" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -369,7 +393,7 @@ export async function compareVersions(
   aId: number,
   bId: number,
 ): Promise<VersionComparison> {
-  const res = await fetch(`/api/versions/${aId}/compare/${bId}`);
+  const res = await fetch(apiUrl(`/api/versions/${aId}/compare/${bId}`));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -379,7 +403,7 @@ export async function compareVersions(
 export async function fetchValidationRuns(): Promise<{
   runs: ValidationRun[];
 }> {
-  const res = await fetch("/api/validation-runs");
+  const res = await fetch(apiUrl("/api/validation-runs"));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -387,13 +411,13 @@ export async function fetchValidationRuns(): Promise<{
 export async function fetchValidationRun(
   id: number,
 ): Promise<{ run: ValidationRun; validations: DecisionValidation[] }> {
-  const res = await fetch(`/api/validation-runs/${id}`);
+  const res = await fetch(apiUrl(`/api/validation-runs/${id}`));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
 export async function fetchValidationSummary(): Promise<ValidationSummary> {
-  const res = await fetch("/api/validation/summary");
+  const res = await fetch(apiUrl("/api/validation/summary"));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -414,7 +438,7 @@ export async function sendChatMessage(
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch("/api/chat", {
+  const res = await fetch(apiUrl("/api/chat"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
@@ -461,7 +485,7 @@ export async function confirmChatChanges(body: {
     error?: string;
   }>;
 }> {
-  const res = await fetch("/api/chat/confirm", {
+  const res = await fetch(apiUrl("/api/chat/confirm"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -471,5 +495,5 @@ export async function confirmChatChanges(body: {
 }
 
 export async function clearChatSession(sessionId: string): Promise<void> {
-  await fetch(`/api/chat/session/${sessionId}`, { method: "DELETE" });
+  await fetch(apiUrl(`/api/chat/session/${sessionId}`), { method: "DELETE" });
 }
