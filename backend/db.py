@@ -162,12 +162,18 @@ def close(conn: sqlite3.Connection) -> None:
 # Pipeline orchestration
 # ---------------------------------------------------------------------------
 
-def start_pipeline_run(conn: sqlite3.Connection, step: str) -> int:
-    """Insert a new run record, return its ID."""
+def start_pipeline_run(
+    conn: sqlite3.Connection, step: str, metadata: str | None = None
+) -> int:
+    """Insert a new run record, return its ID.
+
+    metadata is an optional JSON string (e.g. {"repo_path": ...}); existing
+    positional callers pass only (conn, step) and are unaffected.
+    """
     now = datetime.now(timezone.utc).isoformat()
     cur = conn.execute(
-        "INSERT INTO pipeline_runs (step, started_at, status) VALUES (?, ?, 'running')",
-        (step, now),
+        "INSERT INTO pipeline_runs (step, started_at, status, metadata) VALUES (?, ?, 'running', ?)",
+        (step, now, metadata),
     )
     _commit(conn)
     return cur.lastrowid
@@ -183,6 +189,53 @@ def complete_pipeline_run(
         (now, status, run_id),
     )
     _commit(conn)
+
+
+def sweep_stale_runs(conn: sqlite3.Connection) -> int:
+    """Mark all runs still 'running' as 'interrupted'. Returns count.
+
+    Called once at app startup to reap runs left dangling by a prior crash /
+    hard restart (their driving process is gone).
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "UPDATE pipeline_runs SET status = 'interrupted', completed_at = ? WHERE status = 'running'",
+        (now,),
+    )
+    _commit(conn)
+    return cur.rowcount
+
+
+def finalize_run_if_running(
+    conn: sqlite3.Connection, run_id: int, status: str
+) -> bool:
+    """Set a terminal status ONLY if the run is still 'running'.
+
+    Idempotent w.r.t. complete_pipeline_run: a run already finalized by its step
+    is left untouched. Returns True if this call changed the row.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "UPDATE pipeline_runs SET completed_at = ?, status = ? WHERE id = ? AND status = 'running'",
+        (now, status, run_id),
+    )
+    _commit(conn)
+    return cur.rowcount > 0
+
+
+def get_latest_run_repo_path(conn: sqlite3.Connection) -> str | None:
+    """repo_path from metadata of the newest part1 run (any status)."""
+    row = conn.execute(
+        "SELECT metadata FROM pipeline_runs "
+        "WHERE step = 'opencode_l2_classification' AND metadata IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if not row or not row["metadata"]:
+        return None
+    try:
+        return json.loads(row["metadata"]).get("repo_path")
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 # ---------------------------------------------------------------------------

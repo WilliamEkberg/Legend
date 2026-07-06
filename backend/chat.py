@@ -4,7 +4,10 @@
 
 import asyncio
 import json
+import sys
 import uuid
+from collections import OrderedDict
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -80,13 +83,18 @@ class ChatSession:
     created_at: datetime = field(default_factory=datetime.now)
 
 
-_sessions: dict[str, ChatSession] = {}
+MAX_SESSIONS = 20
+_sessions: "OrderedDict[str, ChatSession]" = OrderedDict()
 
 
 def get_or_create_session(session_id: str | None) -> ChatSession:
     if session_id and session_id in _sessions:
+        _sessions.move_to_end(session_id)
         return _sessions[session_id]
     session = ChatSession()
+    # LRU bound: evict least-recently-used sessions before inserting a new one.
+    while len(_sessions) >= MAX_SESSIONS:
+        _sessions.popitem(last=False)
     _sessions[session.id] = session
     return session
 
@@ -98,61 +106,99 @@ def delete_session(session_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # MCP client management
 # ---------------------------------------------------------------------------
+# stdio_client(...) and ClientSession(...) are anyio context managers that hold
+# cancel scopes. anyio requires __aenter__ and __aexit__ to run in the SAME
+# task. The old code entered them in one request task and exited in another,
+# raising "Attempted to exit cancel scope in a different task". Fix: a dedicated
+# long-lived OWNER task performs BOTH enter and exit; requests only read the
+# session and signal shutdown via an event.
 
-_mcp_context = None
-_mcp_session: ClientSession | None = None
-_mcp_lock = asyncio.Lock()
+
+class MCPManager:
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._owner_task: asyncio.Task | None = None
+        self._session: ClientSession | None = None
+        self._stop: asyncio.Event | None = None
+        self._start_error: BaseException | None = None
+
+    async def get_session(self, db_path: str) -> ClientSession:
+        async with self._lock:
+            if (
+                self._session is not None
+                and self._owner_task is not None
+                and not self._owner_task.done()
+            ):
+                # Restart-on-death: health-check the live session.
+                try:
+                    await asyncio.wait_for(self._session.list_tools(), 10)
+                    return self._session
+                except Exception:
+                    await self._shutdown_locked()
+            await self._start_locked(db_path)
+            return self._session
+
+    async def shutdown(self):
+        async with self._lock:
+            await self._shutdown_locked()
+
+    async def _start_locked(self, db_path: str):
+        ready = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._start_error = None
+        self._owner_task = asyncio.create_task(
+            self._owner(db_path, ready, self._stop), name="mcp-owner"
+        )
+        await ready.wait()
+        if self._start_error is not None:
+            err = self._start_error
+            self._owner_task = None
+            raise RuntimeError(f"MCP server failed to start: {err!r}")
+
+    async def _owner(self, db_path: str, ready: asyncio.Event, stop: asyncio.Event):
+        """THE owner task: enters and exits both anyio context managers itself."""
+        try:
+            async with AsyncExitStack() as stack:
+                params = StdioServerParameters(
+                    command=sys.executable,
+                    args=[str(Path(__file__).parent / "mcp_server.py"), str(db_path)],
+                )
+                read, write = await stack.enter_async_context(stdio_client(params))
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                self._session = session
+                ready.set()
+                await stop.wait()  # park; the CMs exit below in THIS task
+        except BaseException as e:
+            self._start_error = e
+        finally:
+            self._session = None
+            ready.set()  # unblock the startup waiter if spawn failed
+
+    async def _shutdown_locked(self):
+        task = self._owner_task
+        self._owner_task = None
+        self._session = None
+        if task is None:
+            return
+        if self._stop is not None:
+            self._stop.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), 10)
+        except (asyncio.TimeoutError, Exception):
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
-async def _create_mcp_session(db_path: str) -> ClientSession:
-    """Spawn MCP subprocess and return a connected ClientSession."""
-    global _mcp_context, _mcp_session
-    server_params = StdioServerParameters(
-        command="python",
-        args=[str(Path(__file__).parent / "mcp_server.py"), str(db_path)],
-    )
-    _mcp_context = stdio_client(server_params)
-    read, write = await _mcp_context.__aenter__()
-    _mcp_session = ClientSession(read, write)
-    await _mcp_session.__aenter__()
-    await _mcp_session.initialize()
-    return _mcp_session
+_mcp = MCPManager()
 
 
 async def get_mcp_session(db_path: str) -> ClientSession:
-    global _mcp_context, _mcp_session
-    async with _mcp_lock:
-        if _mcp_session is not None:
-            # Check if the session is still alive
-            try:
-                await _mcp_session.list_tools()
-                return _mcp_session
-            except Exception:
-                # Session is dead — clean up and reconnect
-                try:
-                    await _mcp_session.__aexit__(None, None, None)
-                except Exception:
-                    pass
-                try:
-                    if _mcp_context:
-                        await _mcp_context.__aexit__(None, None, None)
-                except Exception:
-                    pass
-                _mcp_session = None
-                _mcp_context = None
-
-        return await _create_mcp_session(db_path)
+    return await _mcp.get_session(db_path)
 
 
 async def shutdown_mcp():
-    global _mcp_context, _mcp_session
-    async with _mcp_lock:
-        if _mcp_session:
-            await _mcp_session.__aexit__(None, None, None)
-            _mcp_session = None
-        if _mcp_context:
-            await _mcp_context.__aexit__(None, None, None)
-            _mcp_context = None
+    await _mcp.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -241,18 +287,6 @@ async def run_chat_turn(
         else:
             model = f"{provider}/claude-sonnet-4-20250514"
 
-    # Set API key via env-style for litellm
-    provider_env_map = {
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "google": "GEMINI_API_KEY",
-        "groq": "GROQ_API_KEY",
-    }
-    env_var = provider_env_map.get(provider)
-    if env_var:
-        import os
-        os.environ[env_var] = api_key
-
     proposed_changes: list[ProposedChange] = []
 
     # Agentic loop
@@ -264,6 +298,7 @@ async def run_chat_turn(
                 messages=messages,
                 tools=litellm_tools if litellm_tools else None,
                 stream=True,
+                api_key=api_key,
             )
         except Exception as e:
             error_msg = str(e)

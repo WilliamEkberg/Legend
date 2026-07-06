@@ -23,6 +23,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from contextlib import asynccontextmanager
+
 import db
 import llm_validation
 from prompts import (
@@ -30,21 +32,35 @@ from prompts import (
     modules_variables_prompt, edges_variables_prompt,
     MODULES_FILENAME, EDGES_FILENAME,
 )
-
-app = FastAPI()
+from run_manager import run_manager, RunInProgressError, guarded_sse_stream, sse
+from streaming import merge_process_output
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_DIR / "output"
 DB_PATH = OUTPUT_DIR / "legend.db"
 
 
-@app.on_event("startup")
-def _ensure_db():
-    """Create the output directory and initialise the database if missing."""
+@asynccontextmanager
+async def lifespan(app):
+    # Startup: ensure output dir + DB, then reap runs left 'running' by a crash.
     OUTPUT_DIR.mkdir(exist_ok=True)
     conn = db.connect(str(DB_PATH))
     db.init_schema(conn)
+    swept = db.sweep_stale_runs(conn)
     db.close(conn)
+    if swept:
+        print(f"[startup] Marked {swept} stale pipeline run(s) as interrupted")
+    run_manager.reset()
+    try:
+        yield
+    finally:
+        # Shutdown: tear down the MCP owner task in the same loop.
+        from chat import shutdown_mcp
+        await shutdown_mcp()
+
+
+app = FastAPI(lifespan=lifespan)
+
 SCIP_ENGINE_DIR = Path(__file__).resolve().parent / "scip-engine"
 
 
@@ -177,6 +193,29 @@ def build_prompt(provider: str, model: str, repo_path: str | None = None) -> str
 
     # Combine system prompt and variables prompt
     return f"{sys_prompt}\n\n---\n\n{var_prompt}"
+
+
+def _repo_mismatch_warning(db_path: str, requested_repo: str) -> str | None:
+    """Warn if the existing map was built from a different repo than requested.
+
+    Reuses pipeline_runs.metadata (no schema change). Returns a warning string
+    or None. Does NOT block the run — it only warns that data will mix.
+    """
+    if not Path(db_path).exists():
+        return None
+    conn = db.connect(db_path)
+    try:
+        prev = db.get_latest_run_repo_path(conn)
+    finally:
+        db.close(conn)
+    requested = str(Path(requested_repo).resolve())
+    if prev and prev != requested:
+        return (
+            f"[WARN] The current map was built from '{prev}' but this run targets "
+            f"'{requested}'. Results will mix data from different repositories. "
+            f"Export the current map first if you want to keep it."
+        )
+    return None
 
 
 def ingest_l2_output(conn, json_path: str, run_id: int) -> None:
@@ -450,19 +489,47 @@ async def run_opencode(req: RunRequest):
 
     cmd = [_get_opencode_executable(), "run", "--agent", "build", "-m", model]
 
+    # Single-flight: reject a concurrent run with HTTP 409.
     try:
-        result = subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=str(OUTPUT_DIR),
-            env=env,
-        )
+        handle = run_manager.try_acquire(step="legacy_run", repo_path=str(PROJECT_DIR))
+    except RunInProgressError as e:
+        raise HTTPException(status_code=409, detail={"error": "run_in_progress", "run": e.run_info})
+
+    try:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(OUTPUT_DIR),
+                env=env,
+            )
+        except FileNotFoundError:
+            return RunResponse(
+                success=False,
+                output="",
+                error="opencode CLI not found. Install with: npm i -g opencode-ai@latest",
+            )
+
+        handle.register_process(proc)
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(prompt.encode("utf-8")), timeout=120
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            return RunResponse(
+                success=False,
+                output="",
+                error="Command timed out after 120 seconds.",
+            )
+
+        stdout = stdout_b.decode("utf-8", errors="replace")
+        stderr = stderr_b.decode("utf-8", errors="replace")
 
         # If successful, ingest the output into the database
-        if result.returncode == 0:
+        if proc.returncode == 0:
             # Find the most recent c4_level2_*.json file in OUTPUT_DIR
             json_files = sorted(OUTPUT_DIR.glob("c4_level2_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
 
@@ -487,29 +554,20 @@ async def run_opencode(req: RunRequest):
                     db.close(conn)
                     return RunResponse(
                         success=False,
-                        output=result.stdout,
+                        output=stdout,
                         error=f"Database ingestion failed: {str(e)}",
                     )
 
                 db.close(conn)
 
         return RunResponse(
-            success=result.returncode == 0,
-            output=result.stdout,
-            error=result.stderr,
+            success=proc.returncode == 0,
+            output=stdout,
+            error=stderr,
         )
-    except FileNotFoundError:
-        return RunResponse(
-            success=False,
-            output="",
-            error="opencode CLI not found. Install with: npm i -g opencode-ai@latest",
-        )
-    except subprocess.TimeoutExpired:
-        return RunResponse(
-            success=False,
-            output="",
-            error="Command timed out after 120 seconds.",
-        )
+    finally:
+        # No-op on normal completion (no procs left alive, no pipeline_run_id set).
+        await handle.release(db_status="failed", db_path=str(DB_PATH))
 
 
 # ---------------------------------------------------------------------------
@@ -1078,7 +1136,8 @@ async def generate_tickets(body: TicketGenerateRequest):
         prompt = _build_ticket_prompt(collapsed)
 
         try:
-            response = litellm.completion(
+            response = await asyncio.to_thread(
+                litellm.completion,
                 model=body.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4096,
@@ -1201,15 +1260,31 @@ async def run_stream(req: StreamRunRequest):
             yield f"data: {json.dumps({'type': 'error', 'text': f'Unknown provider: {req.provider}'})}\n\n"
         return StreamingResponse(error_stream(), media_type="text/event-stream")
 
+    # Reject unknown steps before acquiring a slot (bad requests don't need one).
+    if req.step not in ("part1", "part2", "part3", "edges", "revalidation"):
+        async def bad_step_stream():
+            yield f"data: {json.dumps({'type': 'error', 'text': f'Unknown step: {req.step}'})}\n\n"
+        return StreamingResponse(bad_step_stream(), media_type="text/event-stream")
+
     model = req.model or f"{req.provider}/claude-sonnet-4-20250514"
     if req.provider == "anthropic" and not req.model:
         model = "anthropic/claude-sonnet-4-20250514"
     elif req.provider == "openai" and not req.model:
         model = "openai/gpt-4o"
 
+    # One source_dir for all steps (hoisted out of the per-step generators).
+    source_dir = req.repo_path or str(PROJECT_DIR)
+
+    # Single-flight: acquire the run slot in the endpoint body, before building
+    # the StreamingResponse, so a rejected 2nd run gets a real HTTP 409 (JSON),
+    # not an SSE stream. Callers must check response.ok before SSE-parsing.
+    try:
+        handle = run_manager.try_acquire(step=req.step, repo_path=str(Path(source_dir).resolve()))
+    except RunInProgressError as e:
+        raise HTTPException(status_code=409, detail={"error": "run_in_progress", "run": e.run_info})
+
     if req.step == "part1":
         env = {**os.environ, env_var: req.api_key}
-        source_dir = req.repo_path or str(PROJECT_DIR)
         # Symlink so opencode (sandboxed to OUTPUT_DIR) can read the target
         # codebase.  Defined here so the cleanup wrapper can always reference it.
         _codebase_link = OUTPUT_DIR / "codebase"
@@ -1222,6 +1297,10 @@ async def run_stream(req: StreamRunRequest):
                 return
 
             OUTPUT_DIR.mkdir(exist_ok=True)
+
+            warn = _repo_mismatch_warning(str(DB_PATH), source_dir)
+            if warn:
+                yield sse({"type": "stderr", "text": warn})
 
             # ----------------------------------------------------------------
             # Step 1A: Run SCIP indexer in parallel with opencode (modules)
@@ -1254,12 +1333,14 @@ async def run_stream(req: StreamRunRequest):
                 await opencode_proc.stdin.drain()
                 opencode_proc.stdin.close()
                 await opencode_proc.stdin.wait_closed()
+                handle.register_process(opencode_proc)
             except FileNotFoundError:
                 yield f"data: {json.dumps({'type': 'error', 'text': 'opencode CLI not found. Install with: npm i -g opencode-ai@latest'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                 return
 
-            scip_cmd, scip_desc = _get_scip_cmd(source_dir)
+            # _get_scip_cmd may pull a Docker image (blocking up to 5 min) — off the loop.
+            scip_cmd, scip_desc = await asyncio.to_thread(_get_scip_cmd, source_dir)
             yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Starting indexer ({scip_desc})...'})}\n\n"
             yield f"data: {json.dumps({'type': 'stdout', 'text': '[Part 1] Identifying modules...'})}\n\n"
 
@@ -1270,37 +1351,21 @@ async def run_stream(req: StreamRunRequest):
                     stderr=asyncio.subprocess.STDOUT,
                     env={**os.environ},
                 )
+                handle.register_process(scip_proc)
             except FileNotFoundError as exc:
                 yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Warning: indexer not found ({exc}). Part 2 will run it.'})}\n\n"
                 scip_proc = None
 
-            # Drain output from opencode + SCIP in parallel
-            queue: asyncio.Queue = asyncio.Queue()
-            _SENTINEL = object()
-
-            async def drain(stream, prefix: str):
-                async for line in stream:
-                    text = line.decode("utf-8", errors="replace").rstrip("\n")
-                    if text:
-                        await queue.put(("stdout", f"{prefix} {text}"))
-                await queue.put(_SENTINEL)
-
-            drain_tasks = [
-                asyncio.create_task(drain(opencode_proc.stdout, "[Part 1]")),
-                asyncio.create_task(drain(opencode_proc.stderr, "[Part 1]")),
+            # Drain output from opencode + SCIP in parallel (shared helper survives
+            # >64KB lines and owns/cancels its pump tasks on disconnect).
+            sources = [
+                (opencode_proc.stdout, "[Part 1]"),
+                (opencode_proc.stderr, "[Part 1]"),
             ]
             if scip_proc is not None:
-                drain_tasks.append(asyncio.create_task(drain(scip_proc.stdout, "[SCIP]")))
-
-            expected = len(drain_tasks)
-            received = 0
-            while received < expected:
-                item = await queue.get()
-                if item is _SENTINEL:
-                    received += 1
-                else:
-                    event_type, text = item
-                    yield f"data: {json.dumps({'type': event_type, 'text': text})}\n\n"
+                sources.append((scip_proc.stdout, "[SCIP]"))
+            async for etype, text in merge_process_output(sources):
+                yield sse({"type": etype, "text": text})
 
             try:
                 opencode_rc = await asyncio.wait_for(opencode_proc.wait(), timeout=60)
@@ -1322,10 +1387,9 @@ async def run_stream(req: StreamRunRequest):
                             stderr=asyncio.subprocess.STDOUT,
                             env={**os.environ},
                         )
-                        async for line in retry_proc.stdout:
-                            text = line.decode("utf-8", errors="replace").rstrip("\n")
-                            if text:
-                                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+                        handle.register_process(retry_proc)
+                        async for etype, text in merge_process_output([(retry_proc.stdout, "[SCIP]")]):
+                            yield sse({"type": etype, "text": text})
                         scip_rc = await retry_proc.wait()
                         if scip_rc == 0:
                             break
@@ -1380,7 +1444,12 @@ async def run_stream(req: StreamRunRequest):
             conn = db.connect(str(DB_PATH))
             db.init_schema(conn)
             yield f"data: {json.dumps({'type': 'stdout', 'text': '[DB] Reconciling modules...'})}\n\n"
-            run_id = db.start_pipeline_run(conn, "opencode_l2_classification")
+            run_id = db.start_pipeline_run(
+                conn,
+                "opencode_l2_classification",
+                metadata=json.dumps({"repo_path": str(Path(source_dir).resolve())}),
+            )
+            handle.set_pipeline_run_id(run_id)
             id_map: dict = {}
             try:
                 id_map = ingest_l2_modules(conn, str(modules_path), run_id)
@@ -1390,6 +1459,13 @@ async def run_stream(req: StreamRunRequest):
                 db.close(conn)
                 yield f"data: {json.dumps({'type': 'stderr', 'text': f'[DB] Module ingestion failed: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
+                return
+
+            if handle.cancel_requested:
+                db.complete_pipeline_run(conn, run_id, "cancelled")
+                db.close(conn)
+                yield sse({"type": "error", "text": "[Part 1] Run cancelled."})
+                yield sse({"type": "done", "success": False})
                 return
 
             # ----------------------------------------------------------------
@@ -1418,6 +1494,7 @@ async def run_stream(req: StreamRunRequest):
                 await edges_proc.stdin.drain()
                 edges_proc.stdin.close()
                 await edges_proc.stdin.wait_closed()
+                handle.register_process(edges_proc)
             except FileNotFoundError:
                 yield f"data: {json.dumps({'type': 'error', 'text': 'opencode CLI not found.'})}\n\n"
                 db.complete_pipeline_run(conn, run_id, "failed")
@@ -1426,26 +1503,10 @@ async def run_stream(req: StreamRunRequest):
                 return
 
             # Drain stdout + stderr concurrently to avoid pipe buffer deadlock
-            edges_queue: asyncio.Queue = asyncio.Queue()
-            _EDGES_SENTINEL = object()
-
-            async def drain_edges(stream, prefix: str):
-                async for line in stream:
-                    text = line.decode("utf-8", errors="replace").rstrip("\n")
-                    if text:
-                        await edges_queue.put(text)
-                await edges_queue.put(_EDGES_SENTINEL)
-
-            asyncio.create_task(drain_edges(edges_proc.stdout, "[Part 1]"))
-            asyncio.create_task(drain_edges(edges_proc.stderr, "[Part 1]"))
-
-            edges_received = 0
-            while edges_received < 2:
-                item = await edges_queue.get()
-                if item is _EDGES_SENTINEL:
-                    edges_received += 1
-                else:
-                    yield f"data: {json.dumps({'type': 'stdout', 'text': f'[Part 1] {item}'})}\n\n"
+            async for etype, text in merge_process_output(
+                [(edges_proc.stdout, "[Part 1]"), (edges_proc.stderr, "[Part 1]")]
+            ):
+                yield sse({"type": etype, "text": text})
 
             try:
                 edges_rc = await asyncio.wait_for(edges_proc.wait(), timeout=60)
@@ -1477,6 +1538,13 @@ async def run_stream(req: StreamRunRequest):
             else:
                 yield f"data: {json.dumps({'type': 'stdout', 'text': f'[DB] {EDGES_FILENAME} not found (edges_rc={edges_rc}) — skipping edge ingestion.'})}\n\n"
 
+            if handle.cancel_requested:
+                db.complete_pipeline_run(conn, run_id, "cancelled")
+                db.close(conn)
+                yield sse({"type": "error", "text": "[Part 1] Run cancelled."})
+                yield sse({"type": "done", "success": False})
+                return
+
             db.complete_pipeline_run(conn, run_id, "completed")
             db.close(conn)
 
@@ -1490,7 +1558,10 @@ async def run_stream(req: StreamRunRequest):
                 if _codebase_link.is_symlink():
                     _codebase_link.unlink()
 
-        return StreamingResponse(part1_stream_with_cleanup(), media_type="text/event-stream")
+        return StreamingResponse(
+            guarded_sse_stream(handle, part1_stream_with_cleanup(), str(DB_PATH)),
+            media_type="text/event-stream",
+        )
 
     elif req.step == "part2":
         # Part 2: SCIP indexing (or reuse) + Component Discovery
@@ -1509,6 +1580,10 @@ async def run_stream(req: StreamRunRequest):
 
                 OUTPUT_DIR.mkdir(exist_ok=True)
 
+                warn = _repo_mismatch_warning(str(DB_PATH), source_dir)
+                if warn:
+                    yield sse({"type": "stderr", "text": warn})
+
                 # ---- Step 1: Use pre-built SCIP index or run indexer ----
                 scip_files = sorted(OUTPUT_DIR.glob("*.scip"), key=lambda p: p.stat().st_mtime, reverse=True)
                 if scip_files:
@@ -1518,7 +1593,7 @@ async def run_stream(req: StreamRunRequest):
                 else:
                     yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Indexing codebase: {source_dir}'})}\n\n"
 
-                    scip_cmd, scip_desc = _get_scip_cmd(source_dir)
+                    scip_cmd, scip_desc = await asyncio.to_thread(_get_scip_cmd, source_dir)
                     yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] Using {scip_desc}'})}\n\n"
 
                     use_docker_retry = _is_docker_scip_cmd(scip_cmd)
@@ -1535,11 +1610,10 @@ async def run_stream(req: StreamRunRequest):
                             stderr=asyncio.subprocess.STDOUT,
                             env={**os.environ},
                         )
+                        handle.register_process(scip_proc)
 
-                        async for line in scip_proc.stdout:
-                            text = line.decode("utf-8", errors="replace").rstrip("\n")
-                            if text:
-                                yield f"data: {json.dumps({'type': 'stdout', 'text': f'[SCIP] {text}'})}\n\n"
+                        async for etype, text in merge_process_output([(scip_proc.stdout, "[SCIP]")]):
+                            yield sse({"type": etype, "text": text})
 
                         scip_rc = await scip_proc.wait()
                         if scip_rc == 0:
@@ -1584,6 +1658,9 @@ async def run_stream(req: StreamRunRequest):
                     task = asyncio.create_task(
                         asyncio.to_thread(_run_pipeline)
                     )
+                    # Thread-backed work can't be force-cancelled; the deferred
+                    # slot release keeps the run held until this thread ends.
+                    handle.attach_task(task)
 
                     # Drain log queue in real time while the pipeline thread runs
                     while not task.done():
@@ -1618,7 +1695,10 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 2] Error: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
-        return StreamingResponse(part2_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            guarded_sse_stream(handle, part2_stream(), str(DB_PATH)),
+            media_type="text/event-stream",
+        )
 
     elif req.step == "part3":
         async def part3_stream():
@@ -1628,11 +1708,14 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                     return
 
-                source_dir = req.repo_path or str(PROJECT_DIR)
                 if not Path(source_dir).is_dir():
                     yield f"data: {json.dumps({'type': 'error', 'text': f'Source directory not found: {source_dir}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                     return
+
+                warn = _repo_mismatch_warning(str(DB_PATH), source_dir)
+                if warn:
+                    yield sse({"type": "stderr", "text": warn})
 
                 yield f"data: {json.dumps({'type': 'stdout', 'text': '[Part 3] Starting map descriptions pipeline...'})}\n\n"
 
@@ -1654,7 +1737,10 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'error', 'text': f'[Part 3] Pipeline failed: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
-        return StreamingResponse(part3_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            guarded_sse_stream(handle, part3_stream(), str(DB_PATH)),
+            media_type="text/event-stream",
+        )
     elif req.step == "edges":
         # Re-aggregate component edges from SCIP without re-running LLM.
         # Reads existing components + files from DB, parses all SCIP files,
@@ -1665,6 +1751,10 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'error', 'text': 'No database found. Run Part 1 + 2 first.'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                     return
+
+                warn = _repo_mismatch_warning(str(DB_PATH), source_dir)
+                if warn:
+                    yield sse({"type": "stderr", "text": warn})
 
                 scip_files = sorted(OUTPUT_DIR.glob("*.scip"), key=lambda p: p.stat().st_mtime, reverse=True)
                 if not scip_files:
@@ -1773,6 +1863,9 @@ async def run_stream(req: StreamRunRequest):
 
                 try:
                     task = asyncio.create_task(asyncio.to_thread(_run_edge_aggregation))
+                    # Thread-backed work can't be force-cancelled; the deferred
+                    # slot release keeps the run held until this thread ends.
+                    handle.attach_task(task)
 
                     while not task.done():
                         try:
@@ -1803,7 +1896,10 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'error', 'text': f'[Edges] Error: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
-        return StreamingResponse(edges_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            guarded_sse_stream(handle, edges_stream(), str(DB_PATH)),
+            media_type="text/event-stream",
+        )
 
     elif req.step == "revalidation":
         async def revalidation_stream():
@@ -1813,11 +1909,14 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                     return
 
-                source_dir = req.repo_path or str(PROJECT_DIR)
                 if not Path(source_dir).is_dir():
                     yield f"data: {json.dumps({'type': 'error', 'text': f'Source directory not found: {source_dir}'})}\n\n"
                     yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
                     return
+
+                warn = _repo_mismatch_warning(str(DB_PATH), source_dir)
+                if warn:
+                    yield sse({"type": "stderr", "text": warn})
 
                 yield f"data: {json.dumps({'type': 'stdout', 'text': '[Re-validate] Starting decision re-validation...'})}\n\n"
 
@@ -1839,12 +1938,32 @@ async def run_stream(req: StreamRunRequest):
                     yield f"data: {json.dumps({'type': 'error', 'text': f'[Re-validate] Pipeline failed: {e}'})}\n\n"
                 yield f"data: {json.dumps({'type': 'done', 'success': False})}\n\n"
 
-        return StreamingResponse(revalidation_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            guarded_sse_stream(handle, revalidation_stream(), str(DB_PATH)),
+            media_type="text/event-stream",
+        )
 
     else:
+        # Unreachable (step validated before acquire); release defensively.
+        await handle.release()
+
         async def bad_step_stream():
             yield f"data: {json.dumps({'type': 'error', 'text': f'Unknown step: {req.step}'})}\n\n"
         return StreamingResponse(bad_step_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/run/status")
+async def run_status():
+    """Report whether a pipeline run is active (and which one)."""
+    return run_manager.status()
+
+
+@app.post("/api/run/cancel")
+async def cancel_run():
+    """Request cancellation of the active run: terminates registered
+    subprocesses. Thread-backed steps run to completion (documented limit)."""
+    cancelled = await run_manager.cancel()
+    return {"cancelled": cancelled}
 
 
 # ---------------------------------------------------------------------------
@@ -1971,7 +2090,6 @@ from chat import (
     delete_session,
     run_chat_turn,
     confirm_changes as do_confirm_changes,
-    shutdown_mcp,
 )
 
 
@@ -2029,8 +2147,3 @@ async def clear_chat_session(session_id: str):
     """Clear conversation history for a session."""
     deleted = delete_session(session_id)
     return {"ok": deleted}
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    await shutdown_mcp()

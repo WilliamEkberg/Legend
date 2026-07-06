@@ -452,3 +452,72 @@ class TestTickets:
             "SELECT * FROM ticket_change_records WHERE ticket_id = ?", (tid,)
         ).fetchall()
         assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# Run lifecycle helpers (stale-run sweep, idempotent finalize, repo_path)
+# ---------------------------------------------------------------------------
+
+class TestRunLifecycleHelpers:
+    def test_sweep_stale_runs_marks_interrupted(self, mem_conn):
+        r1 = db.start_pipeline_run(mem_conn, "part1")
+        r2 = db.start_pipeline_run(mem_conn, "part2")
+        db.complete_pipeline_run(mem_conn, r2, "completed")
+        # r1 is still 'running' -> should be swept
+        n = db.sweep_stale_runs(mem_conn)
+        assert n == 1
+        row = mem_conn.execute(
+            "SELECT status, completed_at FROM pipeline_runs WHERE id = ?", (r1,)
+        ).fetchone()
+        assert row["status"] == "interrupted"
+        assert row["completed_at"] is not None
+        # Completed run untouched
+        row2 = mem_conn.execute(
+            "SELECT status FROM pipeline_runs WHERE id = ?", (r2,)
+        ).fetchone()
+        assert row2["status"] == "completed"
+        # Second sweep is a no-op
+        assert db.sweep_stale_runs(mem_conn) == 0
+
+    def test_finalize_run_if_running_is_idempotent(self, mem_conn):
+        rid = db.start_pipeline_run(mem_conn, "part1")
+        assert db.finalize_run_if_running(mem_conn, rid, "cancelled") is True
+        row = mem_conn.execute(
+            "SELECT status FROM pipeline_runs WHERE id = ?", (rid,)
+        ).fetchone()
+        assert row["status"] == "cancelled"
+        # A second finalize does nothing (already terminal, not 'running')
+        assert db.finalize_run_if_running(mem_conn, rid, "failed") is False
+        row = mem_conn.execute(
+            "SELECT status FROM pipeline_runs WHERE id = ?", (rid,)
+        ).fetchone()
+        assert row["status"] == "cancelled"
+
+    def test_finalize_does_not_override_completed(self, mem_conn):
+        rid = db.start_pipeline_run(mem_conn, "part1")
+        db.complete_pipeline_run(mem_conn, rid, "completed")
+        assert db.finalize_run_if_running(mem_conn, rid, "cancelled") is False
+        row = mem_conn.execute(
+            "SELECT status FROM pipeline_runs WHERE id = ?", (rid,)
+        ).fetchone()
+        assert row["status"] == "completed"
+
+    def test_latest_run_repo_path_roundtrip(self, mem_conn):
+        assert db.get_latest_run_repo_path(mem_conn) is None
+        db.start_pipeline_run(
+            mem_conn, "opencode_l2_classification",
+            metadata=json.dumps({"repo_path": "/repos/first"}),
+        )
+        db.start_pipeline_run(
+            mem_conn, "opencode_l2_classification",
+            metadata=json.dumps({"repo_path": "/repos/second"}),
+        )
+        # newest wins
+        assert db.get_latest_run_repo_path(mem_conn) == "/repos/second"
+
+    def test_latest_run_repo_path_ignores_other_steps(self, mem_conn):
+        db.start_pipeline_run(
+            mem_conn, "edge_reaggregation",
+            metadata=json.dumps({"repo_path": "/repos/edges"}),
+        )
+        assert db.get_latest_run_repo_path(mem_conn) is None
