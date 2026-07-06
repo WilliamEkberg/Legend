@@ -164,8 +164,10 @@ def classify_new_files(
         print(f"  [Phase 0] Classifying {len(file_work_items)} source files ({MAX_WORKERS} parallel)...")
 
     # Parallel LLM calls — one per file
-    # result = (module, comp_info, classification_dict)
-    file_results: list[tuple[dict, list[dict], dict]] = []
+    # result = (module, comp_info, file_path, classification_dict)
+    # We carry the real scanned file_path (from the disk walk) — the LLM-echoed
+    # "file" field is untrusted and ignored.
+    file_results: list[tuple[dict, list[dict], str, dict]] = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_item = {
             executor.submit(
@@ -179,7 +181,7 @@ def classify_new_files(
             try:
                 classification = future.result()
                 if classification:
-                    file_results.append((mod, comp_info, classification))
+                    file_results.append((mod, comp_info, file_path, classification))
                     target = classification.get("existing_component") or classification.get("new_component", {}).get("name", "?")
                     print(f"  [Phase 0]   {file_path} → {target}")
             except Exception as e:
@@ -194,57 +196,62 @@ def classify_new_files(
     comp_info_by_module: dict[int, list[dict]] = {}
     source_assignments: dict[str, int] = {}  # file_path → component_id
 
-    for mod, comp_info, cls in file_results:
-        mod_id = mod["id"]
+    with db.transaction(conn):
+        for mod, comp_info, file_path, cls in file_results:
+            mod_id = mod["id"]
 
-        # Lazily build name→id lookup per module
-        if mod_id not in name_to_id_by_module:
-            name_to_id_by_module[mod_id] = {c["name"]: c["id"] for c in comp_info}
-            comp_info_by_module[mod_id] = comp_info
-        name_to_id = name_to_id_by_module[mod_id]
+            # Lazily build name→id lookup per module
+            if mod_id not in name_to_id_by_module:
+                name_to_id_by_module[mod_id] = {c["name"]: c["id"] for c in comp_info}
+                comp_info_by_module[mod_id] = comp_info
+            name_to_id = name_to_id_by_module[mod_id]
 
-        file_path = cls.get("file", "")
-        existing = cls.get("existing_component")
-        new_comp = cls.get("new_component")
+            # Use the real scanned path — the LLM-echoed "file" field is ignored.
+            existing = cls.get("existing_component")
+            new_comp = cls.get("new_component")
 
-        if existing and existing in name_to_id:
-            comp_id = name_to_id[existing]
-            db.add_component_files(conn, comp_id, [file_path], [False])
-            source_assignments[file_path] = comp_id
-            stats["files_assigned"] += 1
-            stats["new_file_paths"].append(file_path)
-
-        elif new_comp:
-            comp_name = new_comp.get("name", "")
-            comp_purpose = new_comp.get("purpose", "")
-
-            if comp_name in name_to_id:
-                # Already exists (either pre-existing or created earlier in this batch)
-                comp_id = name_to_id[comp_name]
-            else:
-                comp_id = db.add_component(
-                    conn, mod_id, comp_name, comp_purpose, confidence=0.5,
-                )
-                name_to_id[comp_name] = comp_id
-                stats["components_created"] += 1
-
-            db.add_component_files(conn, comp_id, [file_path], [False])
-            source_assignments[file_path] = comp_id
-            stats["files_assigned"] += 1
-            stats["new_file_paths"].append(file_path)
-
-    # Assign test files using path-similarity fallback
-    for mod_id, test_paths in test_files_by_module.items():
-        name_to_id = name_to_id_by_module.get(mod_id, {})
-        comp_info = comp_info_by_module.get(mod_id, [])
-        for test_path in test_paths:
-            assigned_comp_id = _match_test_to_component(
-                test_path, source_assignments, name_to_id, comp_info,
-            )
-            if assigned_comp_id:
-                db.add_component_files(conn, assigned_comp_id, [test_path], [True])
+            if existing and existing in name_to_id:
+                comp_id = name_to_id[existing]
+                db.add_component_files(conn, comp_id, [file_path], [False])
+                source_assignments[file_path] = comp_id
                 stats["files_assigned"] += 1
-                stats["new_file_paths"].append(test_path)
+                stats["new_file_paths"].append(file_path)
+
+            elif new_comp:
+                comp_name = (new_comp.get("name") or "").strip()
+                comp_purpose = new_comp.get("purpose", "")
+
+                if not comp_name:
+                    stats["orphan_files"] += 1
+                    continue
+
+                if comp_name in name_to_id:
+                    # Already exists (either pre-existing or created earlier in this batch)
+                    comp_id = name_to_id[comp_name]
+                else:
+                    comp_id = db.add_component(
+                        conn, mod_id, comp_name, comp_purpose, confidence=0.5,
+                    )
+                    name_to_id[comp_name] = comp_id
+                    stats["components_created"] += 1
+
+                db.add_component_files(conn, comp_id, [file_path], [False])
+                source_assignments[file_path] = comp_id
+                stats["files_assigned"] += 1
+                stats["new_file_paths"].append(file_path)
+
+        # Assign test files using path-similarity fallback
+        for mod_id, test_paths in test_files_by_module.items():
+            name_to_id = name_to_id_by_module.get(mod_id, {})
+            comp_info = comp_info_by_module.get(mod_id, [])
+            for test_path in test_paths:
+                assigned_comp_id = _match_test_to_component(
+                    test_path, source_assignments, name_to_id, comp_info,
+                )
+                if assigned_comp_id:
+                    db.add_component_files(conn, assigned_comp_id, [test_path], [True])
+                    stats["files_assigned"] += 1
+                    stats["new_file_paths"].append(test_path)
 
     print(
         f"  [Phase 0] Done. "

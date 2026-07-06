@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 import db
+import llm_validation
 from prompts import (
     modules_system_prompt, edges_system_prompt,
     modules_variables_prompt, edges_variables_prompt,
@@ -194,33 +195,39 @@ def ingest_l2_output(conn, json_path: str, run_id: int) -> None:
     with open(json_path, 'r') as f:
         json_data = json.load(f)
 
-    modules = json_data.get("modules", [])
+    # Validate LLM output structurally before any DB mutation.
+    modules = llm_validation.validate_l2_modules(json_data)
     name_by_id = {e["id"]: e["name"] for e in modules}
 
-    # Step 1: Insert modules and build ID map
-    id_map = {}  # {json_string_id: db_integer_id}
-
+    # Build normalized incoming for reconcile_modules. Strip "codebase/" prefix —
+    # opencode sees the repo through a ./codebase symlink, but SCIP indexes real
+    # paths without it.
+    incoming = []
     for entry in modules:
-        module_id = db.add_module(
-            conn,
-            name=entry["name"],
-            classification=entry.get("classification", "module"),
-            type=entry.get("type"),
-            technology=entry.get("technology"),
-            source_origin=entry.get("sourceOrigin"),
-            deployment_target=entry.get("deploymentTarget"),
-            run_id=run_id
-        )
+        incoming.append({
+            "name": entry["name"],
+            "classification": entry["classification"],
+            "type": entry["type"],
+            "technology": entry["technology"],
+            "source_origin": entry["source_origin"],
+            "deployment_target": entry["deployment_target"],
+            "directories": [d.removeprefix("codebase/") for d in entry["directories"]],
+        })
 
-        directories = entry.get("directories", [])
-        # Strip "codebase/" prefix — opencode sees the repo through a
-        # ./codebase symlink, but SCIP indexes real paths without it.
-        directories = [d.removeprefix("codebase/") for d in directories]
-        if directories:
-            db.add_module_directories(conn, module_id, directories)
+    with db.transaction(conn):
+        # Step 1: Reconcile modules in place (IDs survive re-runs), build ID map
+        id_by_name = db.reconcile_modules(conn, incoming, run_id)
+        id_map = {entry["id"]: id_by_name[entry["name"]] for entry in modules}
 
-        id_map[entry["id"]] = module_id
+        # Replace pipeline-created module edges (human-created edges have
+        # pipeline_run_id IS NULL and are preserved).
+        conn.execute("DELETE FROM module_edges WHERE pipeline_run_id IS NOT NULL")
 
+        _ingest_l2_edges_from_modules(conn, modules, id_map, name_by_id, run_id)
+
+
+def _ingest_l2_edges_from_modules(conn, modules, id_map, name_by_id, run_id):
+    """Build and upsert module edges from the normalized modules list."""
     # Step 2: Collect unique edges — (source_id, target_id, edge_type) -> metadata
     # relationships entries are processed first and take priority over consumedBy.
     edges = {}
@@ -289,9 +296,9 @@ def ingest_l2_output(conn, json_path: str, run_id: int) -> None:
                     "description": f"{consumer_name} imports {library_name}"
                 })
 
-    # Step 3: Insert all unique edges
+    # Step 3: Insert all unique edges (upsert — re-runs may re-declare an edge)
     for (source_id, target_id, edge_type), metadata in edges.items():
-        db.add_module_edge(conn, source_id, target_id, edge_type, 1.0, metadata, run_id)
+        db.upsert_module_edge(conn, source_id, target_id, edge_type, 1.0, metadata, run_id)
 
 
 def ingest_l2_modules(conn, json_path: str, run_id: int) -> dict:
@@ -303,25 +310,26 @@ def ingest_l2_modules(conn, json_path: str, run_id: int) -> dict:
     with open(json_path, 'r') as f:
         json_data = json.load(f)
 
-    id_map = {}
-    for entry in json_data.get("modules", []):
-        module_id = db.add_module(
-            conn,
-            name=entry["name"],
-            classification=entry.get("classification", "module"),
-            type=entry.get("type"),
-            technology=entry.get("technology"),
-            source_origin=entry.get("sourceOrigin"),
-            deployment_target=entry.get("deploymentTarget"),
-            run_id=run_id,
-        )
-        directories = entry.get("directories", [])
-        # Strip "codebase/" prefix — opencode sees the repo through a
-        # ./codebase symlink, but SCIP indexes real paths without it.
-        directories = [d.removeprefix("codebase/") for d in directories]
-        if directories:
-            db.add_module_directories(conn, module_id, directories)
-        id_map[entry["id"]] = module_id
+    # Validate LLM output structurally before any DB mutation.
+    modules = llm_validation.validate_l2_modules(json_data)
+
+    incoming = []
+    for entry in modules:
+        incoming.append({
+            "name": entry["name"],
+            "classification": entry["classification"],
+            "type": entry["type"],
+            "technology": entry["technology"],
+            "source_origin": entry["source_origin"],
+            "deployment_target": entry["deployment_target"],
+            # Strip "codebase/" prefix — opencode sees the repo through a
+            # ./codebase symlink, but SCIP indexes real paths without it.
+            "directories": [d.removeprefix("codebase/") for d in entry["directories"]],
+        })
+
+    with db.transaction(conn):
+        id_by_name = db.reconcile_modules(conn, incoming, run_id)
+        id_map = {entry["id"]: id_by_name[entry["name"]] for entry in modules}
 
     return id_map
 
@@ -343,6 +351,16 @@ def ingest_l2_edges(conn, json_path: str, id_map: dict, run_id: int) -> tuple[in
     seen_edges: set = set()
     skipped_ids: list = []
 
+    with db.transaction(conn):
+        # Replace pipeline-created edges only; human-created edges (pipeline_run_id
+        # IS NULL) are preserved.
+        conn.execute("DELETE FROM module_edges WHERE pipeline_run_id IS NOT NULL")
+        _ingest_l2_edges_body(conn, json_data, id_map, run_id, seen_edges, skipped_ids, _get_name)
+
+    return len(seen_edges), skipped_ids
+
+
+def _ingest_l2_edges_body(conn, json_data, id_map, run_id, seen_edges, skipped_ids, _get_name):
     # Direct edges
     for edge in json_data.get("edges", []):
         source_str = edge.get("sourceId")
@@ -372,7 +390,7 @@ def ingest_l2_edges(conn, json_path: str, id_map: dict, run_id: int) -> tuple[in
         key = (source_id, target_id, edge_type)
         if key not in seen_edges:
             seen_edges.add(key)
-            db.add_module_edge(conn, source_id, target_id, edge_type, 1.0, metadata, run_id)
+            db.upsert_module_edge(conn, source_id, target_id, edge_type, 1.0, metadata, run_id)
 
     # consumedBy — shared library consumer relationships
     for cb in json_data.get("consumedBy", []):
@@ -389,13 +407,11 @@ def ingest_l2_edges(conn, json_path: str, id_map: dict, run_id: int) -> tuple[in
             key = (consumer_id, library_id, "depends_on")
             if key not in seen_edges:
                 seen_edges.add(key)
-                db.add_module_edge(
+                db.upsert_module_edge(
                     conn, consumer_id, library_id, "depends_on", 1.0,
                     json.dumps({"label": f"uses {library_name}"}),
                     run_id,
                 )
-
-    return len(seen_edges), skipped_ids
 
 
 class RunRequest(BaseModel):
@@ -455,9 +471,7 @@ async def run_opencode(req: RunRequest):
                 conn = db.connect(str(DB_PATH))
                 db.init_schema(conn)
 
-                # Clear old modules before ingesting new data (re-run scenario)
-                db.clear_modules(conn)
-
+                # Re-runs reconcile in place (see ingest_l2_output) — no clear.
                 # Start pipeline run
                 run_id = db.start_pipeline_run(conn, "opencode_l2_classification")
 
@@ -692,6 +706,19 @@ async def delete_decision_endpoint(decision_id: int):
         )
         db.delete_decisions_by_ids(conn, [decision_id])
         return {"ok": True}
+    finally:
+        db.close(conn)
+
+
+@app.get("/api/decisions/orphaned")
+async def get_orphaned_decisions():
+    """Return human/chat-authored decisions parked when their entity was reaped
+    by a pipeline re-run (they re-attach automatically if the entity returns)."""
+    if not DB_PATH.exists():
+        return {"decisions": []}
+    conn = db.connect(str(DB_PATH))
+    try:
+        return {"decisions": db.get_orphaned_decisions(conn)}
     finally:
         db.close(conn)
 
@@ -1072,56 +1099,63 @@ async def generate_tickets(body: TicketGenerateRequest):
                 )
             raise HTTPException(status_code=502, detail=f"LLM API error: {e}")
 
-        raw_text = response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        try:
+            ticket_list = llm_validation.parse_llm_json(content, expect="array")
+        except llm_validation.LLMOutputError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM returned unparseable ticket JSON: {e}",
+            )
 
-        # Extract JSON array from response (handle markdown code fences)
-        if "```" in raw_text:
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-
-        ticket_list = json.loads(raw_text)
+        # Coerce fields that the LLM may return as lists instead of strings
+        def _to_str(v) -> str:
+            if isinstance(v, list):
+                return "\n".join(str(i) for i in v)
+            return str(v) if v else ""
 
         saved_tickets = []
         map_corrections = 0
         run_id = db.start_pipeline_run(conn, "ticket_generation")
 
-        for t in ticket_list:
-            if t.get("is_map_correction"):
-                map_corrections += 1
-                continue
+        # Ticket writes + baseline advance are atomic.
+        with db.transaction(conn):
+            for t in ticket_list:
+                if not isinstance(t, dict):
+                    continue
+                if t.get("is_map_correction"):
+                    map_corrections += 1
+                    continue
 
-            # Coerce fields that the LLM may return as lists instead of strings
-            def _to_str(v) -> str:
-                if isinstance(v, list):
-                    return "\n".join(str(i) for i in v)
-                return str(v) if v else ""
+                title = _to_str(t.get("title"))
+                if not title:
+                    continue
 
-            ticket_id = db.add_ticket(
-                conn,
-                title=_to_str(t.get("title")),
-                description=_to_str(t.get("description")),
-                acceptance_criteria=_to_str(t.get("acceptance_criteria")),
-                run_id=run_id,
-            )
-            affected_files = t.get("affected_files") or []
-            if isinstance(affected_files, str):
-                affected_files = [affected_files]
-            if affected_files:
-                db.add_ticket_files(conn, ticket_id, affected_files)
-            cr_ids = [r["id"] for r in raw_records if r["id"] in (t.get("change_record_ids") or [])]
-            if cr_ids:
-                db.link_ticket_change_records(conn, ticket_id, cr_ids)
-            saved_tickets.append({
-                "id": ticket_id,
-                "title": _to_str(t.get("title")),
-                "description": _to_str(t.get("description")),
-                "acceptance_criteria": _to_str(t.get("acceptance_criteria")),
-                "affected_files": affected_files,
-            })
+                ticket_id = db.add_ticket(
+                    conn,
+                    title=title,
+                    description=_to_str(t.get("description")),
+                    acceptance_criteria=_to_str(t.get("acceptance_criteria")),
+                    run_id=run_id,
+                )
+                affected_files = t.get("affected_files") or []
+                if isinstance(affected_files, str):
+                    affected_files = [affected_files]
+                if affected_files:
+                    db.add_ticket_files(conn, ticket_id, affected_files)
+                cr_ids = [r["id"] for r in raw_records if r["id"] in (t.get("change_record_ids") or [])]
+                if cr_ids:
+                    db.link_ticket_change_records(conn, ticket_id, cr_ids)
+                saved_tickets.append({
+                    "id": ticket_id,
+                    "title": title,
+                    "description": _to_str(t.get("description")),
+                    "acceptance_criteria": _to_str(t.get("acceptance_criteria")),
+                    "affected_files": affected_files,
+                })
 
-        db.complete_pipeline_run(conn, run_id, "completed")
-        db.create_baseline(conn)
+            db.complete_pipeline_run(conn, run_id, "completed")
+            db.create_baseline(conn)
 
         return {"tickets": saved_tickets, "map_corrections": map_corrections}
     finally:
@@ -1345,8 +1379,7 @@ async def run_stream(req: StreamRunRequest):
 
             conn = db.connect(str(DB_PATH))
             db.init_schema(conn)
-            yield f"data: {json.dumps({'type': 'stdout', 'text': '[DB] Clearing old data...'})}\n\n"
-            db.clear_modules(conn)
+            yield f"data: {json.dumps({'type': 'stdout', 'text': '[DB] Reconciling modules...'})}\n\n"
             run_id = db.start_pipeline_run(conn, "opencode_l2_classification")
             id_map: dict = {}
             try:
@@ -1658,6 +1691,7 @@ async def run_stream(req: StreamRunRequest):
                 def _run_edge_aggregation():
                     conn = db.connect(str(DB_PATH))
                     try:
+                        run_id = db.start_pipeline_run(conn, "edge_reaggregation")
                         modules = db.get_modules(conn)
                         total_edges = 0
                         processed = 0
@@ -1703,34 +1737,37 @@ async def run_stream(req: StreamRunRequest):
                             if l3_edges:
                                 l3_edges = label_component_edges(l3_edges, components, edge_client, _log)
 
-                            # Replace old edges for this module
-                            conn.execute("""
-                                DELETE FROM component_edges
-                                WHERE source_id IN (SELECT id FROM components WHERE module_id = ?)
-                                   OR target_id IN (SELECT id FROM components WHERE module_id = ?)
-                            """, (module["id"], module["id"]))
-
                             name_to_id = {comp["name"]: comp["id"] for comp in components}
                             written = 0
-                            for edge in l3_edges:
-                                src = name_to_id.get(edge["source"])
-                                tgt = name_to_id.get(edge["target"])
-                                if src and tgt:
-                                    metadata = json.dumps(edge.get("metadata", {}))
-                                    db.add_component_edge(
-                                        conn, src, tgt,
-                                        edge["edge_type"], edge["weight"],
-                                        metadata,
-                                    )
-                                    written += 1
+                            with db.transaction(conn):
+                                # Replace pipeline-created edges for this module only
+                                # (human-created edges have pipeline_run_id IS NULL).
+                                conn.execute("""
+                                    DELETE FROM component_edges
+                                    WHERE (source_id IN (SELECT id FROM components WHERE module_id = ?)
+                                       OR  target_id IN (SELECT id FROM components WHERE module_id = ?))
+                                      AND pipeline_run_id IS NOT NULL
+                                """, (module["id"], module["id"]))
 
-                            conn.commit()
+                                for edge in l3_edges:
+                                    src = name_to_id.get(edge["source"])
+                                    tgt = name_to_id.get(edge["target"])
+                                    if src and tgt:
+                                        metadata = json.dumps(edge.get("metadata", {}))
+                                        db.add_component_edge(
+                                            conn, src, tgt,
+                                            edge["edge_type"], edge["weight"],
+                                            metadata, run_id,
+                                        )
+                                        written += 1
+
                             total_edges += written
                             processed += 1
                             _log(f"[Edges] '{module['name']}': {written} edge(s) written")
 
                         _log(f"[Edges] Done: {processed} module(s) processed, "
                              f"{skipped} skipped, {total_edges} edge(s) written")
+                        db.complete_pipeline_run(conn, run_id)
                     finally:
                         conn.close()
 

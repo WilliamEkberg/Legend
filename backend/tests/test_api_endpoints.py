@@ -286,3 +286,105 @@ class TestTicketsEndpoint:
         assert len(data["tickets"]) == 1
         assert data["tickets"][0]["title"] == "Fix bug"
         assert "src/login.py" in data["tickets"][0]["files"]
+
+
+# ---------------------------------------------------------------------------
+# /api/tickets/generate — LLM output trust boundary
+# ---------------------------------------------------------------------------
+
+class _FakeMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content):
+        self.message = _FakeMessage(content)
+
+
+class _FakeResponse:
+    def __init__(self, content):
+        self.choices = [_FakeChoice(content)]
+
+
+def _seed_change_record(db_file):
+    """Add a change record after the current baseline so generate_tickets runs."""
+    conn = db.connect(str(db_file))
+    baseline = db.get_current_baseline(conn)
+    db.add_change_record(
+        conn, "decision", 1, "edit",
+        json.dumps({"category": "tech", "text": "old"}),
+        json.dumps({"category": "tech", "text": "new"}),
+        "human", baseline_id=baseline["id"] if baseline else None, module_id=1,
+    )
+    db.close(conn)
+
+
+class TestGenerateTickets:
+    def test_prose_response_returns_502(self, seeded_client):
+        client, db_file, _ = seeded_client
+        _seed_change_record(db_file)
+
+        import litellm
+        with patch.object(litellm, "completion",
+                          return_value=_FakeResponse("Sorry, I cannot produce JSON.")):
+            resp = client.post("/api/tickets/generate", json={"api_key": "k"})
+        assert resp.status_code == 502
+
+    def test_none_content_returns_502(self, seeded_client):
+        client, db_file, _ = seeded_client
+        _seed_change_record(db_file)
+
+        import litellm
+        with patch.object(litellm, "completion", return_value=_FakeResponse(None)):
+            resp = client.post("/api/tickets/generate", json={"api_key": "k"})
+        assert resp.status_code == 502
+
+    def test_valid_fenced_json_creates_ticket(self, seeded_client):
+        client, db_file, _ = seeded_client
+        _seed_change_record(db_file)
+
+        content = '```json\n[{"title": "Do it", "description": "d", "acceptance_criteria": "a", "change_record_ids": []}]\n```'
+        import litellm
+        with patch.object(litellm, "completion", return_value=_FakeResponse(content)):
+            resp = client.post("/api/tickets/generate", json={"api_key": "k"})
+        assert resp.status_code == 200
+        assert resp.json()["tickets"][0]["title"] == "Do it"
+
+
+# ---------------------------------------------------------------------------
+# /api/decisions/orphaned
+# ---------------------------------------------------------------------------
+
+class TestOrphanedDecisions:
+    def test_empty(self, client):
+        resp = client.get("/api/decisions/orphaned")
+        assert resp.status_code == 200
+        assert resp.json()["decisions"] == []
+
+    def test_no_db(self, tmp_path):
+        from fastapi.testclient import TestClient
+        import main
+        original = main.DB_PATH
+        main.DB_PATH = tmp_path / "nonexistent.db"
+        tc = TestClient(main.app)
+        resp = tc.get("/api/decisions/orphaned")
+        assert resp.status_code == 200
+        assert resp.json()["decisions"] == []
+        main.DB_PATH = original
+
+    def test_returns_parked_decision(self, seeded_client):
+        client, db_file, _ = seeded_client
+        conn = db.connect(str(db_file))
+        conn.execute(
+            "INSERT INTO decisions (module_id, component_id, category, text, source, orphaned_module_name)"
+            " VALUES (NULL, NULL, 'tech', 'parked one', 'human', 'GoneModule')"
+        )
+        conn.commit()
+        db.close(conn)
+
+        resp = client.get("/api/decisions/orphaned")
+        data = resp.json()
+        assert len(data["decisions"]) == 1
+        assert data["decisions"][0]["text"] == "parked one"
+        assert data["decisions"][0]["orphaned_module_name"] == "GoneModule"

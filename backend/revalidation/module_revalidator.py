@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import db
 from map_descriptions.llm_client import LLMClient
+from map_descriptions.component_describer import VALID_CATEGORIES
 from map_descriptions.module_describer import (
     _collect_component_decisions,
     _format_component_decisions,
@@ -102,39 +103,43 @@ def revalidate_all_modules(
     # Write to DB serially
     stats = _empty_stats()
     for module, validations in results:
-        for v in validations:
-            decision_id = v.get("decision_id")
-            status = v["status"]
+        with db.transaction(conn):
+            for v in validations:
+                decision_id = v.get("decision_id")
+                status = v["status"]
+                source = v.get("source", "pipeline_generated")
 
-            db.add_decision_validation(
-                conn,
-                validation_run_id=validation_run_id,
-                decision_id=decision_id,
-                source=v.get("source", "pipeline_generated"),
-                status=status,
-                old_text=v.get("old_text"),
-                new_text=v.get("new_text"),
-                reason=v.get("reason"),
-                category=v.get("category"),
-                module_name=module["name"],
-                component_name=None,
-            )
-
-            # Apply updates to live decisions (without change_records!)
-            if status == "updated" and v.get("new_text") and decision_id:
-                db.update_decision(conn, decision_id, text=v["new_text"])
-
-            # Add new decisions discovered during re-validation
-            if status == "new" and v.get("text"):
-                db.add_decision(
+                db.add_decision_validation(
                     conn,
-                    category=v["category"],
-                    text=v["text"],
-                    module_id=module["id"],
-                    source="pipeline_generated",
+                    validation_run_id=validation_run_id,
+                    decision_id=decision_id,
+                    source=source,
+                    status=status,
+                    old_text=v.get("old_text"),
+                    new_text=v.get("new_text"),
+                    reason=v.get("reason"),
+                    category=v.get("category"),
+                    module_name=module["name"],
+                    component_name=None,
                 )
 
-            stats[status] = stats.get(status, 0) + 1
+                # Apply updates to live decisions (without change_records!).
+                # Re-validation must NEVER rewrite a human decision's text.
+                if (status == "updated" and v.get("new_text") and decision_id
+                        and source == "pipeline_generated"):
+                    db.update_decision(conn, decision_id, text=v["new_text"])
+
+                # Add new decisions discovered during re-validation
+                if status == "new" and v.get("text"):
+                    db.add_decision(
+                        conn,
+                        category=v["category"],
+                        text=v["text"],
+                        module_id=module["id"],
+                        source="pipeline_generated",
+                    )
+
+                stats[status] = stats.get(status, 0) + 1
 
     print(f"  [Re-validate] Phase B complete: {sum(stats.values())} validations")
     return stats
@@ -157,6 +162,11 @@ def _revalidate_module_worker(
     """
     validations: list[dict] = []
 
+    # Trust boundary: only accept decision_ids we actually gave the LLM, scoped
+    # to the correct source (no hallucinated/cross-source IDs).
+    allowed_pipeline = {d["id"] for d in pipeline_decisions}
+    allowed_human = {d["id"] for d in human_decisions}
+
     # Validate pipeline-generated module decisions against component decisions
     if pipeline_decisions and component_decisions:
         decisions_text = _format_component_decisions(component_decisions)
@@ -167,6 +177,9 @@ def _revalidate_module_worker(
 
         for v in response.get("validations", []):
             decision_id = v.get("decision_id")
+            if decision_id not in allowed_pipeline:
+                print(f"  [Re-validate]   Ignoring out-of-scope pipeline decision_id {decision_id!r} for module '{module['name']}'")
+                continue
             status = v.get("status", "confirmed")
             original = next((d for d in pipeline_decisions if d["id"] == decision_id), None)
             validations.append({
@@ -182,7 +195,15 @@ def _revalidate_module_worker(
         # New module-level decisions
         for nd in response.get("new_decisions", []):
             text = nd.get("text", "").strip()
-            cat = nd.get("category", "cross_cutting")
+            # Default only when the category is missing; if the LLM supplies a
+            # category it must be a known one, otherwise skip the entry.
+            raw_cat = nd.get("category")
+            if raw_cat is None or raw_cat == "":
+                cat = "cross_cutting"
+            elif raw_cat in VALID_CATEGORIES:
+                cat = raw_cat
+            else:
+                continue
             if text:
                 validations.append({
                     "decision_id": None,
@@ -207,6 +228,9 @@ def _revalidate_module_worker(
 
         for v in response.get("validations", []):
             decision_id = v.get("decision_id")
+            if decision_id not in allowed_human:
+                print(f"  [Re-validate]   Ignoring out-of-scope human decision_id {decision_id!r} for module '{module['name']}'")
+                continue
             original = next((d for d in human_decisions if d["id"] == decision_id), None)
             validations.append({
                 "decision_id": decision_id,

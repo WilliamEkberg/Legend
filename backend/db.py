@@ -2,7 +2,58 @@
 
 import json
 import sqlite3
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
+
+
+# ---------------------------------------------------------------------------
+# Transaction management
+# ---------------------------------------------------------------------------
+# id()s of connections currently inside a managed transaction block. Helpers
+# check membership before their per-call commit, so an atomic block groups many
+# helper calls into a single commit/rollback. Behavior outside a transaction is
+# identical to before (each helper commits itself). We key by id() because
+# sqlite3.Connection objects are not weak-referenceable / hashable-for-WeakSet
+# on all builds; the id is only tracked while the connection is alive inside an
+# active block, so there is no id-reuse hazard.
+_txn_conns: set[int] = set()
+_txn_lock = threading.Lock()
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """Atomic block. Re-entrant (inner blocks join the outer one).
+
+    Helpers called inside skip their per-call commit; the block commits on
+    success and rolls back on any exception.
+    """
+    key = id(conn)
+    with _txn_lock:
+        reentrant = key in _txn_conns
+        if not reentrant:
+            _txn_conns.add(key)
+    if reentrant:
+        # Inner block: just run, the outermost block owns commit/rollback.
+        yield conn
+        return
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        with _txn_lock:
+            _txn_conns.discard(key)
+
+
+def _commit(conn: sqlite3.Connection) -> None:
+    """Commit unless conn is inside a managed transaction block."""
+    with _txn_lock:
+        inside = id(conn) in _txn_conns
+    if not inside:
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +112,46 @@ def _migrate(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass  # already migrated or component_edges doesn't exist yet
 
+    # Migrate decisions table: relax the module/component CHECK and add the
+    # orphaned_module_name / orphaned_component_name columns used for parking
+    # human-authored decisions. Rebuild is required because SQLite cannot alter
+    # a CHECK constraint in place. IDs are copied verbatim so ticket_decisions,
+    # change_records, version_decisions and decision_validations references stay
+    # valid.
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(decisions)").fetchall()]
+        if cols and "orphaned_module_name" not in cols:
+            conn.commit()  # close any open txn (PRAGMA foreign_keys is a no-op mid-txn)
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("""
+                CREATE TABLE decisions_new (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    module_id       INTEGER REFERENCES modules(id) ON DELETE CASCADE,
+                    component_id    INTEGER REFERENCES components(id) ON DELETE CASCADE,
+                    category        TEXT NOT NULL,
+                    text            TEXT NOT NULL,
+                    detail          TEXT,
+                    source          TEXT NOT NULL DEFAULT 'pipeline_generated',
+                    pipeline_run_id INTEGER REFERENCES pipeline_runs(id),
+                    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    orphaned_module_name    TEXT,
+                    orphaned_component_name TEXT,
+                    CHECK (NOT (module_id IS NOT NULL AND component_id IS NOT NULL))
+                )
+            """)
+            conn.execute("""
+                INSERT INTO decisions_new
+                    (id, module_id, component_id, category, text, detail, source, pipeline_run_id, created_at)
+                SELECT id, module_id, component_id, category, text, detail, source, pipeline_run_id, created_at
+                FROM decisions
+            """)
+            conn.execute("DROP TABLE decisions")
+            conn.execute("ALTER TABLE decisions_new RENAME TO decisions")
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys=ON")
+    except sqlite3.OperationalError:
+        pass  # already migrated or decisions doesn't exist yet
+
 
 def close(conn: sqlite3.Connection) -> None:
     """Close the connection."""
@@ -78,7 +169,7 @@ def start_pipeline_run(conn: sqlite3.Connection, step: str) -> int:
         "INSERT INTO pipeline_runs (step, started_at, status) VALUES (?, ?, 'running')",
         (step, now),
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -91,7 +182,7 @@ def complete_pipeline_run(
         "UPDATE pipeline_runs SET completed_at = ?, status = ? WHERE id = ?",
         (now, status, run_id),
     )
-    conn.commit()
+    _commit(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +206,7 @@ def add_module(
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (name, classification, type, technology, source_origin, deployment_target, run_id),
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -127,7 +218,7 @@ def add_module_directories(
         "INSERT INTO module_directories (module_id, path) VALUES (?, ?)",
         [(module_id, p) for p in paths],
     )
-    conn.commit()
+    _commit(conn)
 
 
 def get_module_directories(conn: sqlite3.Connection, module_id: int) -> list[str]:
@@ -160,7 +251,7 @@ def get_module(conn: sqlite3.Connection, module_id: int) -> dict | None:
 def clear_modules(conn: sqlite3.Connection) -> None:
     """Delete all modules (cascades to directories, components, etc.)."""
     conn.execute("DELETE FROM modules")
-    conn.commit()
+    _commit(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +273,7 @@ def add_component(
            VALUES (?, ?, ?, ?, ?)""",
         (module_id, name, purpose, confidence, run_id),
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -197,7 +288,7 @@ def add_component_files(
         "INSERT INTO component_files (component_id, path, is_test) VALUES (?, ?, ?)",
         [(component_id, p, int(t)) for p, t in zip(paths, is_test)],
     )
-    conn.commit()
+    _commit(conn)
 
 
 def get_components(
@@ -264,7 +355,32 @@ def add_module_edge(
            VALUES (?, ?, ?, ?, ?, ?)""",
         (source_id, target_id, edge_type, weight, metadata, run_id),
     )
-    conn.commit()
+    _commit(conn)
+
+
+def upsert_module_edge(
+    conn: sqlite3.Connection,
+    source_id: int,
+    target_id: int,
+    edge_type: str | None,
+    weight: float = 1.0,
+    metadata: str | None = None,
+    run_id: int | None = None,
+) -> None:
+    """Insert a module edge, or update it in place if (source, target, edge_type)
+    already exists. Used by reconciling ingest so re-runs don't collide on the
+    UNIQUE(source_id, target_id, edge_type) constraint."""
+    conn.execute(
+        """INSERT INTO module_edges
+           (source_id, target_id, edge_type, weight, metadata, pipeline_run_id)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(source_id, target_id, edge_type)
+           DO UPDATE SET weight = excluded.weight,
+                         metadata = excluded.metadata,
+                         pipeline_run_id = excluded.pipeline_run_id""",
+        (source_id, target_id, edge_type, weight, metadata, run_id),
+    )
+    _commit(conn)
 
 
 def get_module_edges(
@@ -300,7 +416,7 @@ def add_component_edge(
            VALUES (?, ?, ?, ?, ?, ?)""",
         (source_id, target_id, edge_type, weight, metadata, run_id),
     )
-    conn.commit()
+    _commit(conn)
 
 
 def get_component_edges(
@@ -337,7 +453,7 @@ def add_decision(
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (module_id, component_id, category, text, detail, source, run_id),
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -374,7 +490,7 @@ def delete_decisions_by_ids(conn: sqlite3.Connection, ids: list[int]) -> None:
         return
     placeholders = ",".join("?" for _ in ids)
     conn.execute(f"DELETE FROM decisions WHERE id IN ({placeholders})", ids)
-    conn.commit()
+    _commit(conn)
 
 
 def clear_decisions(
@@ -382,7 +498,253 @@ def clear_decisions(
 ) -> None:
     """Remove only decisions with the given source, preserving others."""
     conn.execute("DELETE FROM decisions WHERE source = ?", (source,))
-    conn.commit()
+    _commit(conn)
+
+
+# ---------------------------------------------------------------------------
+# Parking / re-attaching human decisions across pipeline re-runs
+# ---------------------------------------------------------------------------
+# When the pipeline reaps an entity it created, any human/chat-authored
+# decisions on that entity would otherwise cascade away. Instead we "park" them:
+# detach (module_id/component_id -> NULL) and remember the entity's name(s) so
+# they can be re-attached automatically if an entity with that name reappears.
+# "Human-authored" means source != 'pipeline_generated' (covers 'human' and the
+# 'chat' source written by MCP chat tools).
+
+def park_module_decisions(
+    conn: sqlite3.Connection, module_id: int, module_name: str
+) -> int:
+    """Detach non-pipeline decisions of a module AND of all its components,
+    before the module row is deleted. Records where each decision lived.
+    Pipeline-generated decisions are left to cascade away. Returns count parked.
+    """
+    # Component decisions first — capture each component's name via subquery
+    # BEFORE the components are deleted by the module cascade.
+    cur_comp = conn.execute(
+        """UPDATE decisions
+           SET component_id = NULL,
+               orphaned_module_name = ?,
+               orphaned_component_name = (
+                   SELECT name FROM components WHERE id = decisions.component_id
+               )
+           WHERE component_id IN (SELECT id FROM components WHERE module_id = ?)
+             AND source != 'pipeline_generated'""",
+        (module_name, module_id),
+    )
+    # Then the module's own decisions
+    cur_mod = conn.execute(
+        """UPDATE decisions
+           SET module_id = NULL,
+               orphaned_module_name = ?
+           WHERE module_id = ?
+             AND source != 'pipeline_generated'""",
+        (module_name, module_id),
+    )
+    _commit(conn)
+    return cur_comp.rowcount + cur_mod.rowcount
+
+
+def park_component_decisions(
+    conn: sqlite3.Connection, component_id: int, module_name: str, component_name: str
+) -> int:
+    """Detach non-pipeline decisions of a single component before it is deleted.
+    Returns count parked."""
+    cur = conn.execute(
+        """UPDATE decisions
+           SET component_id = NULL,
+               orphaned_module_name = ?,
+               orphaned_component_name = ?
+           WHERE component_id = ?
+             AND source != 'pipeline_generated'""",
+        (module_name, component_name, component_id),
+    )
+    _commit(conn)
+    return cur.rowcount
+
+
+def reattach_orphaned_decisions(conn: sqlite3.Connection) -> int:
+    """Re-attach parked decisions whose home entity exists again. Clears the
+    orphan columns on re-attach. Returns count re-attached."""
+    # Component decisions: match component name within the named module.
+    cur_comp = conn.execute(
+        """UPDATE decisions
+           SET component_id = (
+                   SELECT c.id FROM components c
+                   JOIN modules m ON c.module_id = m.id
+                   WHERE m.name = decisions.orphaned_module_name
+                     AND c.name = decisions.orphaned_component_name
+                   LIMIT 1
+               ),
+               orphaned_module_name = NULL,
+               orphaned_component_name = NULL
+           WHERE module_id IS NULL AND component_id IS NULL
+             AND orphaned_component_name IS NOT NULL
+             AND EXISTS (
+                   SELECT 1 FROM components c
+                   JOIN modules m ON c.module_id = m.id
+                   WHERE m.name = decisions.orphaned_module_name
+                     AND c.name = decisions.orphaned_component_name
+               )"""
+    )
+    # Module decisions (no component name): match module name.
+    cur_mod = conn.execute(
+        """UPDATE decisions
+           SET module_id = (
+                   SELECT id FROM modules
+                   WHERE name = decisions.orphaned_module_name
+                   LIMIT 1
+               ),
+               orphaned_module_name = NULL,
+               orphaned_component_name = NULL
+           WHERE module_id IS NULL AND component_id IS NULL
+             AND orphaned_component_name IS NULL
+             AND orphaned_module_name IS NOT NULL
+             AND EXISTS (
+                   SELECT 1 FROM modules WHERE name = decisions.orphaned_module_name
+               )"""
+    )
+    _commit(conn)
+    return cur_comp.rowcount + cur_mod.rowcount
+
+
+def get_orphaned_decisions(conn: sqlite3.Connection) -> list[dict]:
+    """Return all parked (detached) decisions."""
+    rows = conn.execute(
+        "SELECT * FROM decisions WHERE module_id IS NULL AND component_id IS NULL"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation (upsert pipeline output by stable name identity)
+# ---------------------------------------------------------------------------
+# reconcile_* upsert pipeline output against existing rows keyed by stable name
+# identity (module.name UNIQUE; component (module_id, name) UNIQUE), so entity
+# IDs survive re-runs and everything hanging off them (decisions, change_records,
+# ticket_decisions) stays valid. Human-created entities (pipeline_run_id IS NULL)
+# are never reaped — the pipeline only reaps what the pipeline created.
+#
+# change_records policy: reconciliation writes NO change_records. Matched
+# entities keep their IDs so existing change_records/ticket_decisions stay valid.
+# Known limitation: an LLM renaming a module reads as remove+add, so human
+# decisions are parked (visible via the orphaned endpoint) and re-attach only if
+# the old name returns. Only exact-name matching is done here — no fuzzy/rename.
+
+def reconcile_modules(
+    conn: sqlite3.Connection, incoming: list[dict], run_id: int | None
+) -> dict[str, int]:
+    """Upsert pipeline module output against existing modules by name.
+
+    incoming entries: {name, classification, type, technology, source_origin,
+    deployment_target, directories: list[str]}. Returns {module_name: module_id}.
+    Call inside db.transaction().
+    """
+    existing = {row["name"]: row for row in get_modules(conn)}
+    incoming_names = {m["name"] for m in incoming}
+    id_by_name: dict[str, int] = {}
+
+    for m in incoming:
+        name = m["name"]
+        directories = m.get("directories") or []
+        if name in existing:
+            module_id = existing[name]["id"]
+            conn.execute(
+                """UPDATE modules
+                   SET classification = ?, type = ?, technology = ?,
+                       source_origin = ?, deployment_target = ?, pipeline_run_id = ?
+                   WHERE id = ?""",
+                (
+                    m.get("classification", "module"),
+                    m.get("type"),
+                    m.get("technology"),
+                    m.get("source_origin"),
+                    m.get("deployment_target"),
+                    run_id,
+                    module_id,
+                ),
+            )
+            conn.execute("DELETE FROM module_directories WHERE module_id = ?", (module_id,))
+            if directories:
+                add_module_directories(conn, module_id, directories)
+        else:
+            module_id = add_module(
+                conn,
+                name=name,
+                classification=m.get("classification", "module"),
+                type=m.get("type"),
+                technology=m.get("technology"),
+                source_origin=m.get("source_origin"),
+                deployment_target=m.get("deployment_target"),
+                run_id=run_id,
+            )
+            if directories:
+                add_module_directories(conn, module_id, directories)
+        id_by_name[name] = module_id
+
+    # Reap pipeline-created modules that are no longer present.
+    for name, row in existing.items():
+        if name in incoming_names:
+            continue
+        if row["pipeline_run_id"] is None:
+            continue  # human/chat-created — leave untouched
+        park_module_decisions(conn, row["id"], name)
+        conn.execute("DELETE FROM modules WHERE id = ?", (row["id"],))
+
+    reattach_orphaned_decisions(conn)
+    return id_by_name
+
+
+def reconcile_components(
+    conn: sqlite3.Connection, module_id: int, incoming: list[dict], run_id: int | None
+) -> dict[str, int]:
+    """Upsert pipeline component output for one module by (module_id, name).
+
+    incoming entries: {name, purpose, confidence, files: list[tuple[path, is_test]]}.
+    Returns {component_name: component_id}. Call inside db.transaction().
+    """
+    module_row = get_module(conn, module_id)
+    module_name = module_row["name"] if module_row else ""
+    existing = {row["name"]: row for row in get_components(conn, module_id)}
+    incoming_names = {c["name"] for c in incoming}
+    name_to_id: dict[str, int] = {}
+
+    for c in incoming:
+        name = c["name"]
+        files = c.get("files") or []
+        if name in existing:
+            component_id = existing[name]["id"]
+            conn.execute(
+                """UPDATE components
+                   SET purpose = ?, confidence = ?, pipeline_run_id = ?
+                   WHERE id = ?""",
+                (c.get("purpose"), c.get("confidence"), run_id, component_id),
+            )
+            conn.execute("DELETE FROM component_files WHERE component_id = ?", (component_id,))
+            if files:
+                add_component_files(
+                    conn, component_id, [p for p, _t in files], [bool(t) for _p, t in files]
+                )
+        else:
+            component_id = add_component(
+                conn, module_id, name, c.get("purpose"), c.get("confidence"), run_id
+            )
+            if files:
+                add_component_files(
+                    conn, component_id, [p for p, _t in files], [bool(t) for _p, t in files]
+                )
+        name_to_id[name] = component_id
+
+    # Reap pipeline-created components no longer present.
+    for name, row in existing.items():
+        if name in incoming_names:
+            continue
+        if row["pipeline_run_id"] is None:
+            continue  # human/chat-created — leave untouched
+        park_component_decisions(conn, row["id"], module_name, name)
+        conn.execute("DELETE FROM components WHERE id = ?", (row["id"],))
+
+    reattach_orphaned_decisions(conn)
+    return name_to_id
 
 
 # ---------------------------------------------------------------------------
@@ -396,19 +758,19 @@ def update_decision(conn: sqlite3.Connection, decision_id: int, **fields) -> Non
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     values = list(fields.values()) + [decision_id]
     conn.execute(f"UPDATE decisions SET {set_clause} WHERE id = ?", values)
-    conn.commit()
+    _commit(conn)
 
 
 def delete_module(conn: sqlite3.Connection, module_id: int) -> None:
     """Delete module with cascade (directories, components, edges, decisions)."""
     conn.execute("DELETE FROM modules WHERE id = ?", (module_id,))
-    conn.commit()
+    _commit(conn)
 
 
 def delete_component(conn: sqlite3.Connection, component_id: int) -> None:
     """Delete component with cascade (component_files, component_edges, decisions)."""
     conn.execute("DELETE FROM components WHERE id = ?", (component_id,))
-    conn.commit()
+    _commit(conn)
 
 
 def move_component_files(
@@ -427,7 +789,7 @@ def move_component_files(
             WHERE component_id = ? AND path IN ({placeholders})""",
         [to_component_id, from_component_id] + file_paths,
     )
-    conn.commit()
+    _commit(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -453,7 +815,7 @@ def add_change_record(
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (entity_type, entity_id, action, old_value, new_value, origin, baseline_id, module_id, component_id),
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -480,7 +842,7 @@ def create_baseline(conn: sqlite3.Connection, run_id: int | None = None) -> int:
     cur = conn.execute(
         "INSERT INTO baselines (pipeline_run_id) VALUES (?)", (run_id,)
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -510,7 +872,7 @@ def add_ticket(
            VALUES (?, ?, ?, ?)""",
         (title, description, acceptance_criteria, run_id),
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -522,7 +884,7 @@ def add_ticket_files(
         "INSERT INTO ticket_files (ticket_id, path) VALUES (?, ?)",
         [(ticket_id, p) for p in paths],
     )
-    conn.commit()
+    _commit(conn)
 
 
 def add_ticket_decisions(
@@ -533,7 +895,7 @@ def add_ticket_decisions(
         "INSERT INTO ticket_decisions (ticket_id, decision_id) VALUES (?, ?)",
         [(ticket_id, d) for d in decision_ids],
     )
-    conn.commit()
+    _commit(conn)
 
 
 def link_ticket_change_records(
@@ -544,7 +906,7 @@ def link_ticket_change_records(
         "INSERT INTO ticket_change_records (ticket_id, change_record_id) VALUES (?, ?)",
         [(ticket_id, cr) for cr in change_record_ids],
     )
-    conn.commit()
+    _commit(conn)
 
 
 def get_tickets(
@@ -615,7 +977,7 @@ def create_map_version(
         "components": comp_count,
     })
     conn.execute("UPDATE map_versions SET summary = ? WHERE id = ?", (summary, version_id))
-    conn.commit()
+    _commit(conn)
     return version_id
 
 
@@ -742,7 +1104,7 @@ def start_validation_run(
            VALUES (?, ?, ?)""",
         (run_id, before_version_id, model),
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -761,7 +1123,7 @@ def complete_validation_run(
            WHERE id = ?""",
         (after_version_id, status, summary_json, validation_run_id),
     )
-    conn.commit()
+    _commit(conn)
 
 
 def get_validation_runs(conn: sqlite3.Connection) -> list[dict]:
@@ -823,7 +1185,7 @@ def add_decision_validation(
         (validation_run_id, decision_id, source, status,
          old_text, new_text, reason, category, module_name, component_name),
     )
-    conn.commit()
+    _commit(conn)
     return cur.lastrowid
 
 
@@ -987,7 +1349,15 @@ def import_full_map(conn: sqlite3.Connection, data: dict) -> dict:
 
     Handles ID remapping: exported integer IDs are replaced with
     fresh autoincrement IDs from the target database.
+
+    The entire import runs inside a single transaction: malformed input rolls
+    back and the previous map survives.
     """
+    with transaction(conn):
+        return _import_full_map_inner(conn, data)
+
+
+def _import_full_map_inner(conn: sqlite3.Connection, data: dict) -> dict:
     clear_modules(conn)
 
     module_id_map: dict[int, int] = {}
@@ -1161,7 +1531,12 @@ CREATE TABLE IF NOT EXISTS component_edges (
     UNIQUE(source_id, target_id, edge_type)
 );
 
--- Technical decisions — polymorphic FK to module OR component
+-- Technical decisions — polymorphic FK to module OR component.
+-- A decision is "attached" when exactly one of module_id/component_id is set.
+-- Both NULL = "parked" (orphaned): its home entity was reaped by the pipeline
+-- but the decision is human/chat-authored, so we detach and remember where it
+-- lived via orphaned_module_name (+ orphaned_component_name for component
+-- decisions) so it can be re-attached if the entity reappears.
 CREATE TABLE IF NOT EXISTS decisions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     module_id       INTEGER REFERENCES modules(id) ON DELETE CASCADE,
@@ -1172,8 +1547,9 @@ CREATE TABLE IF NOT EXISTS decisions (
     source          TEXT NOT NULL DEFAULT 'pipeline_generated',
     pipeline_run_id INTEGER REFERENCES pipeline_runs(id),
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    CHECK ((module_id IS NOT NULL AND component_id IS NULL) OR
-           (module_id IS NULL AND component_id IS NOT NULL))
+    orphaned_module_name    TEXT,
+    orphaned_component_name TEXT,
+    CHECK (NOT (module_id IS NOT NULL AND component_id IS NOT NULL))
 );
 
 -- Change records — tracks every map edit (decisions, modules, components)

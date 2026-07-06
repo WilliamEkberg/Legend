@@ -284,10 +284,7 @@ def discover_all_components(
             module_with_dirs = dict(module)
             module_with_dirs["directories"] = dirs
 
-            # Clear existing components for this module before re-discovering
-            conn.execute("DELETE FROM components WHERE module_id = ?", (module["id"],))
-            conn.commit()
-
+            # Components are reconciled in place (see _write_to_db) — no clear.
             discover_components(conn, module_with_dirs, scip_path, source_dir, client, run_id, log_fn=log_fn)
 
             comp_after = conn.execute(
@@ -540,54 +537,55 @@ def _write_to_db(
     l3_edges: list[dict],
     run_id: int | None,
 ) -> None:
-    """Write components, files, and edges to the database."""
+    """Reconcile components (upsert by name), files, and edges into the DB.
+
+    Reconciling in place keeps existing component IDs stable across re-runs, so
+    human decisions and change_records hanging off them stay valid; pipeline
+    components no longer present are reaped (their human decisions are parked).
+    """
     components = _deduplicate_components(components)
 
-    # Build name -> db_id mapping for edge resolution
-    name_to_id = {}
-
-    for comp in components:
-        comp_name = comp["name"]
-        purpose = comp.get("purpose", "")
-        confidence = comp.get("confidence")
-
-        try:
-            component_id = db.add_component(
-                conn, module_id, comp_name, purpose, confidence, run_id
-            )
-        except sqlite3.IntegrityError:
-            # Safety net: if deduplication missed a collision, reuse existing ID
-            row = conn.execute(
-                "SELECT id FROM components WHERE module_id = ? AND name = ?",
-                (module_id, comp_name),
-            ).fetchone()
-            if row:
-                component_id = row[0]
-            else:
-                raise
-        name_to_id[comp_name] = component_id
-
-        # Source files
-        source_paths = comp["files"]
-        is_test_flags = [False] * len(source_paths)
-        db.add_component_files(conn, component_id, source_paths, is_test_flags)
-
-    # Add test file assignments
+    # Fold test file assignments into each component's file list as (path, True);
+    # source files are (path, False). Drop the "unassigned" bucket.
+    tests_by_comp: dict[str, list[str]] = defaultdict(list)
     for test_path, comp_name in test_assignments.items():
         if comp_name == "unassigned":
             continue
-        comp_id = name_to_id.get(comp_name)
-        if comp_id:
-            db.add_component_files(conn, comp_id, [test_path], [True])
+        tests_by_comp[comp_name].append(test_path)
 
-    # Write L3 edges with name -> ID resolution
-    for edge in l3_edges:
-        source_id = name_to_id.get(edge["source"])
-        target_id = name_to_id.get(edge["target"])
-        if source_id and target_id:
-            metadata = json.dumps(edge.get("metadata", {}))
-            db.add_component_edge(
-                conn, source_id, target_id,
-                edge["edge_type"], edge["weight"],
-                metadata, run_id,
-            )
+    incoming = []
+    for comp in components:
+        comp_name = comp["name"]
+        files = [(p, False) for p in comp["files"]]
+        files += [(p, True) for p in tests_by_comp.get(comp_name, [])]
+        incoming.append({
+            "name": comp_name,
+            "purpose": comp.get("purpose", ""),
+            "confidence": comp.get("confidence"),
+            "files": files,
+        })
+
+    with db.transaction(conn):
+        name_to_id = db.reconcile_components(conn, module_id, incoming, run_id)
+
+        # Replace pipeline-created L3 edges for this module only (human-created
+        # edges have pipeline_run_id IS NULL and are preserved).
+        conn.execute(
+            """DELETE FROM component_edges
+               WHERE (source_id IN (SELECT id FROM components WHERE module_id = ?)
+                  OR  target_id IN (SELECT id FROM components WHERE module_id = ?))
+                 AND pipeline_run_id IS NOT NULL""",
+            (module_id, module_id),
+        )
+
+        # Write L3 edges with name -> ID resolution
+        for edge in l3_edges:
+            source_id = name_to_id.get(edge["source"])
+            target_id = name_to_id.get(edge["target"])
+            if source_id and target_id:
+                metadata = json.dumps(edge.get("metadata", {}))
+                db.add_component_edge(
+                    conn, source_id, target_id,
+                    edge["edge_type"], edge["weight"],
+                    metadata, run_id,
+                )

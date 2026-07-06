@@ -329,13 +329,21 @@ class TestDecisions:
                 (mid, cid, "tech", "bad"),
             )
 
-    def test_decision_check_constraint_no_ids_fails(self, mem_conn):
-        """Decision with NEITHER module_id nor component_id should violate CHECK."""
-        with pytest.raises(sqlite3.IntegrityError):
-            mem_conn.execute(
-                "INSERT INTO decisions (module_id, component_id, category, text) VALUES (?, ?, ?, ?)",
-                (None, None, "tech", "orphan"),
-            )
+    def test_decision_check_constraint_no_ids_allowed(self, mem_conn):
+        """A decision with NEITHER module_id nor component_id is now allowed:
+        this is a 'parked' (orphaned) decision whose home entity was reaped by a
+        pipeline re-run. The relaxed CHECK only forbids BOTH being set."""
+        mem_conn.execute(
+            "INSERT INTO decisions (module_id, component_id, category, text, source, orphaned_module_name)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (None, None, "tech", "orphan", "human", "SomeModule"),
+        )
+        row = mem_conn.execute(
+            "SELECT * FROM decisions WHERE text = 'orphan'"
+        ).fetchone()
+        assert row["module_id"] is None
+        assert row["component_id"] is None
+        assert row["orphaned_module_name"] == "SomeModule"
 
     def test_delete_component_cascades_decisions(self, mem_conn):
         """Deleting a component should cascade-delete its decisions."""

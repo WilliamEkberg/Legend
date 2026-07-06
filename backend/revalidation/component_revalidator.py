@@ -109,42 +109,43 @@ def revalidate_all_components(
     stats = _empty_stats()
     for component, module_name, validations in results:
         comp_name = component["name"]
-        for v in validations:
-            decision_id = v.get("decision_id")
-            status = v["status"]
-            source = v.get("source", "pipeline_generated")
+        with db.transaction(conn):
+            for v in validations:
+                decision_id = v.get("decision_id")
+                status = v["status"]
+                source = v.get("source", "pipeline_generated")
 
-            db.add_decision_validation(
-                conn,
-                validation_run_id=validation_run_id,
-                decision_id=decision_id,
-                source=source,
-                status=status,
-                old_text=v.get("old_text"),
-                new_text=v.get("new_text"),
-                reason=v.get("reason"),
-                category=v.get("category"),
-                module_name=module_name,
-                component_name=comp_name,
-            )
-
-            # Apply updates to live decisions (without change_records!)
-            if status == "updated" and v.get("new_text") and decision_id:
-                db.update_decision(conn, decision_id, text=v["new_text"])
-
-            # Add new decisions discovered during re-validation
-            if status == "new" and v.get("text"):
-                new_id = db.add_decision(
+                db.add_decision_validation(
                     conn,
-                    category=v["category"],
-                    text=v["text"],
-                    component_id=component["id"],
-                    source="pipeline_generated",
+                    validation_run_id=validation_run_id,
+                    decision_id=decision_id,
+                    source=source,
+                    status=status,
+                    old_text=v.get("old_text"),
+                    new_text=v.get("new_text"),
+                    reason=v.get("reason"),
+                    category=v.get("category"),
+                    module_name=module_name,
+                    component_name=comp_name,
                 )
-                # Update the validation record with the new decision_id
-                # (it was added with decision_id=None for 'new' entries)
 
-            stats[status] = stats.get(status, 0) + 1
+                # Apply updates to live decisions (without change_records!).
+                # Re-validation must NEVER rewrite a human decision's text.
+                if (status == "updated" and v.get("new_text") and decision_id
+                        and source == "pipeline_generated"):
+                    db.update_decision(conn, decision_id, text=v["new_text"])
+
+                # Add new decisions discovered during re-validation
+                if status == "new" and v.get("text"):
+                    db.add_decision(
+                        conn,
+                        category=v["category"],
+                        text=v["text"],
+                        component_id=component["id"],
+                        source="pipeline_generated",
+                    )
+
+                stats[status] = stats.get(status, 0) + 1
 
     print(f"  [Re-validate] Phase A complete: {sum(stats.values())} validations")
     return stats
@@ -179,6 +180,12 @@ def _revalidate_component_worker(
 
     validations: list[dict] = []
 
+    # Trust boundary: the LLM echoes decision_ids back. Only accept IDs we
+    # actually gave it, scoped to the correct source, so a hallucinated or
+    # cross-source ID can never overwrite another decision.
+    allowed_pipeline = {d["id"] for d in pipeline_decisions}
+    allowed_human = {d["id"] for d in human_decisions}
+
     # Validate pipeline-generated decisions
     if pipeline_decisions:
         prompt = component_revalidation_prompt(
@@ -188,6 +195,9 @@ def _revalidate_component_worker(
 
         for v in response.get("validations", []):
             decision_id = v.get("decision_id")
+            if decision_id not in allowed_pipeline:
+                print(f"  [Re-validate]   Ignoring out-of-scope pipeline decision_id {decision_id!r} for '{component['name']}'")
+                continue
             status = v.get("status", "confirmed")
             # Find the original decision text for 'updated' entries
             original = next((d for d in pipeline_decisions if d["id"] == decision_id), None)
@@ -226,6 +236,9 @@ def _revalidate_component_worker(
 
         for v in response.get("validations", []):
             decision_id = v.get("decision_id")
+            if decision_id not in allowed_human:
+                print(f"  [Re-validate]   Ignoring out-of-scope human decision_id {decision_id!r} for '{component['name']}'")
+                continue
             original = next((d for d in human_decisions if d["id"] == decision_id), None)
             validations.append({
                 "decision_id": decision_id,
